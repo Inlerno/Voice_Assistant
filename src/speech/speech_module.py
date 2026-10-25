@@ -12,9 +12,20 @@ class SpeechRecognizer:
         self.model = vosk.Model(model_path)
         self.input_device = input_device or sd.default.device[0]
         self.audio_queue = queue.Queue()
+        # Optional callbacks for the interface: on_state("idle"|"listening"|"processing"), on_phrase(text)
+        self.on_state = None
+        self.on_phrase = None
+
+    def _notify(self, callback, *args):
+        if callback:
+            try:
+                callback(*args)
+            except Exception:
+                logger.exception("Interface callback error")
 
     # Listen for the activation word
     def listen_for_activation(self, activation_words, callback=None):
+        self._notify(self.on_state, "idle")
         samplerate = int(sd.query_devices(self.input_device, 'input')['default_samplerate'])
         rec = vosk.KaldiRecognizer(self.model, samplerate)
 
@@ -53,6 +64,7 @@ class SpeechRecognizer:
     #   max_duration      - hard limit for the whole recording, in seconds
     #   no_speech_timeout - give up if nothing was said within this time, in seconds
     def listen_command(self, max_duration=8, no_speech_timeout=5):
+        self._notify(self.on_state, "listening")
         try:
             samplerate = int(sd.query_devices(self.input_device, 'input')['default_samplerate'])
             rec = vosk.KaldiRecognizer(self.model, samplerate)
@@ -100,6 +112,8 @@ class SpeechRecognizer:
             query = json.loads(result_json).get('text', '').lower().strip()
             if query:
                 logger.info("Recognized: %s", query)
+                self._notify(self.on_phrase, query)
+                self._notify(self.on_state, "processing")
                 return query
             return None
         except Exception as e:

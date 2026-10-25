@@ -42,8 +42,21 @@ class Assistant:
         self.session_timeout = 15
 
         self.interface_manager = VoiceAssistantApp(self)
+        self.connect_interface()
         threading.Thread(target=self.main, daemon=True).start()
         self.interface_manager.start_interface()
+
+    # Show the assistant state, recognized phrases and spoken answers in the interface
+    def connect_interface(self):
+        ui = self.interface_manager
+
+        def on_speak(text):
+            ui.add_message("assistant", text)
+            ui.set_state("speaking")
+
+        self.tts.on_speak = on_speak
+        self.speech_recognizer.on_state = ui.set_state
+        self.speech_recognizer.on_phrase = lambda text: ui.add_message("user", text)
 
     # Set the input device and save the settings
     def set_input_device(self, device_index):
@@ -52,15 +65,24 @@ class Assistant:
         self.save_settings()
         logging.info("Устройство ввода обновлено на %s", device_index)
 
+    # Set the interface theme: Dark, Light or System
+    def set_appearance(self, mode):
+        self.appearance = mode
+        self.save_settings()
+
     def save_settings(self):
         with open(self.settings_file, 'w', encoding='utf-8') as f:
-            json.dump({'input_device': self.input_device}, f)
+            json.dump({'input_device': self.input_device, 'appearance': self.appearance}, f)
 
     def load_settings(self):
+        self.appearance = 'Dark'
         try:
             with open(self.settings_file, 'r', encoding='utf-8') as f:
                 settings = json.load(f)
                 self.input_device = settings.get('input_device', sd.default.device[0])
+                appearance = settings.get('appearance', 'Dark')
+                if appearance in ('Dark', 'Light', 'System'):
+                    self.appearance = appearance
         except Exception:
             self.input_device = sd.default.device[0]
 
