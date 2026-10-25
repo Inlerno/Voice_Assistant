@@ -181,14 +181,23 @@ class Assistant:
     # Run the assistant's main loop
     def main(self):
         while True:
-            self.speech_recognizer.listen_for_activation(
-                self.activation_words,
-                lambda: self.tts.speak("Слушаю")
-            )
-            last_active_time = time.time()
-            while time.time() - last_active_time < self.session_timeout:
-                query = self.speech_recognizer.listen_command()
-                if query:
-                    self.process_command(query)
-                    last_active_time = time.time()
-            self.sound_player.play_sound('shutdown')
+            try:
+                self.speech_recognizer.listen_for_activation(
+                    self.activation_words,
+                    lambda: self.tts.speak("Слушаю")
+                )
+                last_active_time = time.time()
+                while time.time() - last_active_time < self.session_timeout:
+                    query = self.speech_recognizer.listen_command()
+                    if query:
+                        try:
+                            self.process_command(query)
+                        except Exception:
+                            # A failed command must not end the session or the assistant
+                            logger.exception("Ошибка при обработке команды: %s", query)
+                        last_active_time = time.time()
+                self.sound_player.play_sound('shutdown')
+            except Exception:
+                # Microphone or audio stream failure: log it and try again after a pause
+                logger.exception("Ошибка в основном цикле, повторная попытка через 2 секунды")
+                time.sleep(2)
