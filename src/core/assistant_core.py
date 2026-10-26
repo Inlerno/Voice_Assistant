@@ -49,14 +49,60 @@ class Assistant:
     # Show the assistant state, recognized phrases and spoken answers in the interface
     def connect_interface(self):
         ui = self.interface_manager
+        # The moment the last phrase was recognized: the time to the first word of the answer is counted from it
+        answer_timer = {"started": None}
+
+        def on_phrase(text, stats):
+            answer_timer["started"] = time.perf_counter()
+            ui.add_message(
+                "user", text, f"распознавание {stats['decode_ms']:.0f} мс · запись {stats['audio_s']:.1f} с"
+            )
 
         def on_speak(text):
-            ui.add_message("assistant", text)
+            started, answer_timer["started"] = answer_timer["started"], None
+            meta = f"ответ через {(time.perf_counter() - started) * 1000:.0f} мс" if started else None
+            ui.add_message("assistant", text, meta)
             ui.set_state("speaking")
 
         self.tts.on_speak = on_speak
         self.speech_recognizer.on_state = ui.set_state
-        self.speech_recognizer.on_phrase = lambda text: ui.add_message("user", text)
+        self.speech_recognizer.on_phrase = on_phrase
+        self.speech_recognizer.on_activation = lambda info: ui.add_message("system", self.describe_activation(info))
+
+    # One line for the dialog: what was heard as the wake word, whether the voice matched and how long it took
+    @staticmethod
+    def describe_activation(info):
+        word = info["text"]
+        timing = f"Vosk {info['decode_ms']:.0f} мс"
+        score, threshold = info["score"], info["threshold"]
+        if threshold is None:
+            return f"Слово «{word}» · профиль голоса не создан · {timing}"
+        timing += f" + сравнение {info['dtw_ms']:.0f} мс"
+        if score is None or score == float("inf"):
+            return f"Слово «{word}» услышано, но не похоже на ваше слово · {timing}"
+        comparison = f"{score:.2f} при пороге {threshold:.2f}"
+        if not info["accepted"]:
+            return f"Слово «{word}» услышано, но голос не совпал: {comparison} · {timing}"
+        suffix = " · профиль подстроен" if info["adapted"] else ""
+        return f"Слово «{word}» · голос совпал: {comparison} · {timing}{suffix}"
+
+    # ---------- Voice profile and the microphone for the interface ----------
+
+    @property
+    def voice_profile(self):
+        return self.speech_recognizer.profile
+
+    # Record the owner saying the wake word several times; runs on the assistant thread when the microphone is free.
+    # Returns a Future with the result of SpeechRecognizer.enroll_wake_word
+    def start_voice_enrollment(self, on_progress, stop_event, count=5):
+        word = self.activation_words[0]
+        return self.speech_recognizer.run_exclusive(
+            lambda: self.speech_recognizer.enroll_wake_word(word, count, on_progress, stop_event)
+        )
+
+    # Run a job that needs the microphone to itself (for example the microphone check); returns a Future
+    def run_with_microphone(self, func):
+        return self.speech_recognizer.run_exclusive(func)
 
     # Set the input device and save the settings
     def set_input_device(self, device_index):
@@ -209,7 +255,12 @@ class Assistant:
                     lambda: self.tts.speak("Слушаю")
                 )
                 last_active_time = time.time()
+                timed_out = True
                 while time.time() - last_active_time < self.session_timeout:
+                    if self.speech_recognizer.has_pending_tasks():
+                        # The interface needs the microphone (voice samples, microphone check)
+                        timed_out = False
+                        break
                     query = self.speech_recognizer.listen_command()
                     if query:
                         try:
@@ -218,7 +269,8 @@ class Assistant:
                             # A failed command must not end the session or the assistant
                             logger.exception("Ошибка при обработке команды: %s", query)
                         last_active_time = time.time()
-                self.sound_player.play_sound('shutdown')
+                if timed_out:
+                    self.sound_player.play_sound('shutdown')
             except Exception:
                 # Microphone or audio stream failure: log it and try again after a pause
                 logger.exception("Ошибка в основном цикле, повторная попытка через 2 секунды")

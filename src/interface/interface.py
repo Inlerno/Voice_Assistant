@@ -8,7 +8,8 @@ from tkinter import PhotoImage
 import customtkinter as ctk
 import sounddevice as sd
 
-from src.audio.mic_test import check_microphone
+from src.audio.mic_test import MicCheckResult, check_microphone
+from src.speech.voice_profile import SENSITIVITY_MAX, SENSITIVITY_MIN
 
 # Fonts (Segoe UI is the native Windows font, Tk falls back to another one elsewhere)
 FONT = "Segoe UI"
@@ -51,6 +52,8 @@ MIC_STATUS_COLORS = {
     "cancelled": MUTED,
 }
 MIC_TEST_SECONDS = 5
+# How many times the owner says the wake word to create the voice profile
+ENROLL_SAMPLES = 5
 LOG_LINES_LIMIT = 500
 LOG_LEVEL_TAGS = {logging.WARNING: "warning", logging.ERROR: "error", logging.CRITICAL: "error"}
 
@@ -86,10 +89,13 @@ class VoiceAssistantApp:
         self.empty_state = None
         self.nav_buttons = {}
         self.pages = {}
-        # Microphone check: worker thread, its stop flag and the smoothed meter position
-        self.mic_test_thread = None
+        # Microphone check: whether it runs, its stop flag and the smoothed meter position
+        self.mic_test_running = False
         self.mic_test_stop = threading.Event()
         self.meter_value = 0.0
+        # Recording of the voice samples for the voice profile
+        self.enrolling = False
+        self.enroll_stop = threading.Event()
         self.activation_word = self._get_activation_word()
 
         ctk.set_appearance_mode(getattr(assistant, "appearance", "Dark"))
@@ -122,9 +128,10 @@ class VoiceAssistantApp:
     def set_state(self, state):
         self.events.put(("state", state))
 
-    # Add a message to the dialog: role is "user" or "assistant"
-    def add_message(self, role, text):
-        self.events.put(("message", role, text))
+    # Add a message to the dialog: role is "user", "assistant" or "system" (a small note without a bubble).
+    # meta is a short remark shown next to the time, for example how many milliseconds the recognition took
+    def add_message(self, role, text, meta=None):
+        self.events.put(("message", role, text, meta))
 
     # ---------- Window construction ----------
 
@@ -335,8 +342,78 @@ class VoiceAssistantApp:
         )
         self.mic_test_text.pack(fill="x", padx=20, pady=(2, 14))
 
+        # Voice profile card
+        voice_card = self.create_card(
+            page,
+            2,
+            "Голос владельца",
+            f"Скажите «{self.activation_word}» {ENROLL_SAMPLES} раз: ассистент запомнит, как звучит ваш голос, "
+            "и будет реагировать на него. По ходу работы профиль сам подстраивается под вас. "
+            "Он хранится только на этом компьютере.",
+        )
+        voice_row = ctk.CTkFrame(voice_card, fg_color="transparent")
+        voice_row.pack(fill="x", padx=20, pady=(0, 6))
+        self.enroll_progress = ctk.CTkProgressBar(
+            voice_row, height=14, corner_radius=7, fg_color=BORDER, progress_color=ACCENT
+        )
+        self.enroll_progress.set(0)
+        self.enroll_progress.pack(side="left", fill="x", expand=True)
+        self.enroll_button = ctk.CTkButton(
+            voice_row,
+            text="Обучить",
+            width=110,
+            height=36,
+            corner_radius=10,
+            font=(FONT, 13),
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            command=self.toggle_enrollment,
+        )
+        self.enroll_button.pack(side="left", padx=(14, 0))
+        self.voice_status = ctk.CTkLabel(
+            voice_card, text="", font=(FONT, 13, "bold"), text_color=TEXT, anchor="w", justify="left", wraplength=620
+        )
+        self.voice_status.pack(fill="x", padx=20, pady=(6, 0))
+        self.voice_hint = ctk.CTkLabel(
+            voice_card, text="", font=(FONT, 12), text_color=MUTED, anchor="w", justify="left", wraplength=620
+        )
+        self.voice_hint.pack(fill="x", padx=20, pady=(2, 8))
+        strictness_row = ctk.CTkFrame(voice_card, fg_color="transparent")
+        strictness_row.pack(fill="x", padx=20, pady=(0, 4))
+        ctk.CTkLabel(strictness_row, text="Строже", font=(FONT, 12), text_color=MUTED).pack(side="left")
+        self.sensitivity_slider = ctk.CTkSlider(
+            strictness_row,
+            from_=SENSITIVITY_MIN,
+            to=SENSITIVITY_MAX,
+            number_of_steps=16,
+            progress_color=ACCENT,
+            button_color=ACCENT,
+            button_hover_color=ACCENT_HOVER,
+            command=self.on_sensitivity_changed,
+        )
+        self.sensitivity_slider.pack(side="left", fill="x", expand=True, padx=12)
+        # Settings are written to the disk once, when the slider is released
+        self.sensitivity_slider.bind("<ButtonRelease-1>", self.on_sensitivity_released)
+        ctk.CTkLabel(strictness_row, text="Мягче", font=(FONT, 12), text_color=MUTED).pack(side="left")
+        self.reset_voice_button = ctk.CTkButton(
+            voice_card,
+            text="Сбросить профиль",
+            width=150,
+            height=32,
+            corner_radius=10,
+            font=(FONT, 13),
+            fg_color="transparent",
+            border_width=1,
+            border_color=BORDER,
+            text_color=TEXT,
+            hover_color=NAV_HOVER,
+            command=self.reset_voice_profile,
+        )
+        self.reset_voice_button.pack(anchor="w", padx=20, pady=(8, 16))
+        self.refresh_voice_card()
+
         # Appearance card
-        look_card = self.create_card(page, 2, "Оформление", "Цветовая схема окна.")
+        look_card = self.create_card(page, 3, "Оформление", "Цветовая схема окна.")
         current = getattr(self.assistant, "appearance", "Dark")
         self.appearance_buttons = ctk.CTkSegmentedButton(
             look_card,
@@ -351,7 +428,7 @@ class VoiceAssistantApp:
         # About card
         about_card = self.create_card(
             page,
-            3,
+            4,
             "О программе",
             "Распознавание речи работает офлайн (Vosk), ответы на свободные вопросы даёт локальная модель "
             "через LM Studio. Подробный журнал сохраняется в logs/assistant.log.",
@@ -394,7 +471,7 @@ class VoiceAssistantApp:
         titles = {
             "dialog": ("Диалог", "Ваши команды и ответы ассистента"),
             "log": ("Журнал", "Что происходит внутри ассистента"),
-            "settings": ("Настройки", "Микрофон и оформление"),
+            "settings": ("Настройки", "Микрофон, голос и оформление"),
         }
         title, subtitle = titles[name]
         self.page_title.configure(text=title)
@@ -442,26 +519,48 @@ class VoiceAssistantApp:
                 if kind == "state":
                     self.apply_state(event[1])
                 elif kind == "message":
-                    self.append_message(event[1], event[2])
+                    self.append_message(event[1], event[2], event[3])
                 elif kind == "log":
                     self.append_log(*event[1:])
+                elif kind == "mic_started":
+                    self.mic_test_verdict.configure(text="Говорите…", text_color=TEXT)
                 elif kind == "mic_level":
                     self.set_meter(event[1])
                 elif kind == "mic_result":
                     self.finish_mic_test(event[1])
+                elif kind == "enroll_progress":
+                    self.show_enroll_progress(*event[1:])
+                elif kind == "enroll_done":
+                    self.finish_enrollment(event[1])
         except queue.Empty:
             pass
         self.root.after(50, self.poll_events)
 
     # ---------- Dialog ----------
 
-    def append_message(self, role, text):
+    def append_message(self, role, text, meta=None):
         text = (text or "").strip()
         if not text:
             return
         if self.empty_state is not None:
             self.empty_state.destroy()
             self.empty_state = None
+
+        if role == "system":
+            # Service note, for example how the wake word was checked: small and quiet, without a bubble
+            label = ctk.CTkLabel(
+                self.chat,
+                text=f"{datetime.now().strftime('%H:%M:%S')} · {text}",
+                font=(FONT, 11),
+                text_color=MUTED,
+                wraplength=self.wrap_length,
+                justify="left",
+                anchor="w",
+            )
+            label.pack(fill="x", padx=10, pady=(0, 8))
+            self.message_labels.append(label)
+            self.root.after(30, lambda: self.chat._parent_canvas.yview_moveto(1.0))
+            return
 
         is_user = role == "user"
         if is_user:
@@ -485,9 +584,12 @@ class VoiceAssistantApp:
         self.message_labels.append(label)
 
         author = "Вы" if is_user else "Астра"
+        footer = f"{author} · {datetime.now().strftime('%H:%M')}"
+        if meta:
+            footer += f" · ⏱ {meta}"
         ctk.CTkLabel(
             row,
-            text=f"{author} · {datetime.now().strftime('%H:%M')}",
+            text=footer,
             font=(FONT, 11),
             text_color=MUTED,
         ).pack(anchor=side, padx=6, pady=(2, 0))
@@ -575,32 +677,135 @@ class VoiceAssistantApp:
 
     # Start the microphone check, or stop it if it is already running
     def toggle_mic_test(self):
-        if self.mic_test_thread is not None and self.mic_test_thread.is_alive():
+        if self.mic_test_running:
             self.mic_test_stop.set()
             return
         device = self.selected_device_index()
         recognizer = getattr(self.assistant, "speech_recognizer", None)
         model = getattr(recognizer, "model", None)
         self.mic_test_stop = threading.Event()
+        self.mic_test_running = True
         self.meter_value = 0.0
         self.mic_meter.set(0)
         self.mic_test_button.configure(text="Остановить")
-        self.mic_test_verdict.configure(text="Говорите…", text_color=TEXT)
+        self.mic_test_verdict.configure(text="Ждём, пока ассистент освободит микрофон…", text_color=MUTED)
         self.mic_test_text.configure(text="")
         stop_event = self.mic_test_stop
 
-        def run():
-            result = check_microphone(
+        # The assistant itself listens to the microphone, so the check runs on its thread when the microphone is free
+        def job():
+            self.events.put(("mic_started",))
+            return check_microphone(
                 device,
                 duration=MIC_TEST_SECONDS,
                 model=model,
                 on_level=lambda level: self.events.put(("mic_level", level)),
                 stop_event=stop_event,
             )
+
+        def done(future):
+            try:
+                result = future.result()
+            except Exception as e:
+                result = MicCheckResult("error", f"Не удалось проверить микрофон: {e}")
             self.events.put(("mic_result", result))
 
-        self.mic_test_thread = threading.Thread(target=run, daemon=True)
-        self.mic_test_thread.start()
+        self.assistant.run_with_microphone(job).add_done_callback(done)
+
+    # ---------- Voice profile ----------
+
+    def profile(self):
+        return getattr(self.assistant, "voice_profile", None)
+
+    # Show the state of the voice profile on the card
+    def refresh_voice_card(self):
+        profile = self.profile()
+        enrolled = bool(profile and profile.enrolled)
+        self.enroll_progress.set(0)
+        self.enroll_button.configure(text="Переобучить" if enrolled else "Обучить")
+        state = "normal" if enrolled else "disabled"
+        # A disabled slider looks just like a working one, so it is grayed out by hand
+        self.sensitivity_slider.configure(
+            state=state,
+            progress_color=ACCENT if enrolled else MUTED,
+            button_color=ACCENT if enrolled else MUTED,
+            button_hover_color=ACCENT_HOVER if enrolled else MUTED,
+        )
+        self.reset_voice_button.configure(state=state)
+        if profile is None:
+            self.voice_status.configure(text="Профиль голоса недоступен.", text_color=MUTED)
+            self.voice_hint.configure(text="")
+        elif enrolled:
+            self.sensitivity_slider.set(profile.sensitivity)
+            self.voice_status.configure(text=profile.summary(), text_color=TEXT)
+            self.show_sensitivity_hint(profile.sensitivity)
+        else:
+            self.voice_status.configure(text=profile.summary(), text_color=TEXT)
+            self.voice_hint.configure(text="Нажмите «Обучить» и произнесите слово несколько раз.")
+
+    def show_sensitivity_hint(self, value):
+        self.voice_hint.configure(text=f"Строгость проверки ×{value:.2f}: меньше — строже, больше — мягче.")
+
+    def on_sensitivity_changed(self, value):
+        profile = self.profile()
+        if profile is not None and profile.enrolled:
+            profile.set_sensitivity(value)
+            self.show_sensitivity_hint(profile.sensitivity)
+
+    def on_sensitivity_released(self, _event=None):
+        profile = self.profile()
+        if profile is None or not profile.enrolled:
+            return
+        try:
+            profile.save()
+        except OSError:
+            logging.exception("Не удалось сохранить профиль голоса")
+
+    # Start recording the voice samples, or cancel it if it is already running
+    def toggle_enrollment(self):
+        if self.enrolling:
+            self.enroll_stop.set()
+            self.enroll_button.configure(state="disabled")
+            return
+        self.enrolling = True
+        self.enroll_stop = threading.Event()
+        self.enroll_progress.set(0)
+        self.enroll_button.configure(text="Отмена")
+        self.reset_voice_button.configure(state="disabled")
+        self.voice_status.configure(text="Ждём, пока ассистент освободит микрофон…", text_color=MUTED)
+        self.voice_hint.configure(text="")
+        future = self.assistant.start_voice_enrollment(
+            lambda done, total, message: self.events.put(("enroll_progress", done, total, message)),
+            self.enroll_stop,
+            ENROLL_SAMPLES,
+        )
+        future.add_done_callback(lambda f: self.events.put(("enroll_done", f)))
+
+    def show_enroll_progress(self, done, total, message):
+        self.enroll_progress.set(done / total if total else 0)
+        self.voice_status.configure(text=f"Записано {done} из {total}", text_color=TEXT)
+        self.voice_hint.configure(text=message)
+
+    def finish_enrollment(self, future):
+        self.enrolling = False
+        self.enroll_button.configure(state="normal")
+        try:
+            result = future.result()
+        except Exception as e:
+            logging.exception("Ошибка при записи образцов голоса")
+            result = {"ok": False, "message": f"Не удалось записать образцы: {e}"}
+        self.refresh_voice_card()
+        status = "ok" if result.get("ok") else ("cancelled" if result.get("cancelled") else "error")
+        self.voice_status.configure(text=result.get("message", ""), text_color=MIC_STATUS_COLORS[status])
+
+    def reset_voice_profile(self):
+        profile = self.profile()
+        if profile is not None:
+            profile.reset()
+        self.refresh_voice_card()
+        self.voice_status.configure(
+            text="Профиль удалён. Ассистент снова реагирует на любой голос.", text_color=MUTED
+        )
 
     # Level meter with a fast rise and a slow fall
     def set_meter(self, level):
@@ -608,6 +813,7 @@ class VoiceAssistantApp:
         self.mic_meter.set(self.meter_value)
 
     def finish_mic_test(self, result):
+        self.mic_test_running = False
         self.mic_test_button.configure(text="Проверить")
         self.mic_test_verdict.configure(
             text=result.message, text_color=MIC_STATUS_COLORS.get(result.status, TEXT)
@@ -632,7 +838,7 @@ class VoiceAssistantApp:
             return
         self.assistant.set_input_device(index)
         # The previous verdict belongs to another device
-        if self.mic_test_thread is None or not self.mic_test_thread.is_alive():
+        if not self.mic_test_running:
             self.mic_meter.set(0)
             self.meter_value = 0.0
             self.mic_test_verdict.configure(text="")

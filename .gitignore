@@ -18,3 +18,11 @@ __pycache__/speech_module.cpython-313.pyc
 __pycache__/tts_module.cpython-313.pyc
 __pycache__/sound_module.cpython-313.pyc
 src/integrations/__pycache__/chat_gpt.cpython-313.pyc
+
+# Personal voice profile of the owner: never commit
+src/config/voice_profile.json
+src/config/voice_profile.tmp
+
+# Python cache
+__pycache__/
+*.pyc
