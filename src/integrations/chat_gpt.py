@@ -1,3 +1,5 @@
+import logging
+
 import lmstudio as lms
 
 
@@ -20,6 +22,8 @@ class ChatGPT:
 - Если пользователь говорит о музыке и песнях, отвечай: "Если хочешь слушать музыку, скажи мне фразу «включи музыку»."
 - Всегда отвечай в женском роде: "Я посмотрела", "Я нашла".
 """
+        # Optional callback for the interface: on_status("busy"|"ok"|"error"), the state of the language model
+        self.on_status = None
         # Dialog storage
         self.messages = []
         # Template for correct GigaChat interaction in LM Studio
@@ -33,8 +37,16 @@ class ChatGPT:
             "additional_stop_strings": []
         }
 
+    def _status(self, state):
+        if self.on_status:
+            try:
+                self.on_status(state)
+            except Exception:
+                logging.getLogger(__name__).exception("on_status callback error")
+
     # Sends a message to the AI model and returns the response
     def ask(self, message: str) -> str:
+        self._status("busy")
         try:
             # Adding the user's message to the history
             self.messages.append({"role": "user", "content": message})
@@ -53,8 +65,10 @@ class ChatGPT:
                     response_text = str(result).strip()
                 # Saving the assistant's response in the history
                 self.messages.append({"role": "assistant", "content": response_text})
+                self._status("ok")
                 return response_text
 
         except Exception as e:
             # Handle possible errors when interacting with the model
+            self._status("error")
             return f"Ошибка при работе с нейросетью: {e}"

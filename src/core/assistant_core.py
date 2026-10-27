@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -40,6 +41,8 @@ class Assistant:
 
         self.sound_player.play_sound('start')
         self.session_timeout = 15
+        # The moment the last phrase was recognized or typed: the time to the first word of the answer counts from it
+        self._answer_started = None
 
         self.interface_manager = VoiceAssistantApp(self)
         self.connect_interface()
@@ -49,28 +52,80 @@ class Assistant:
     # Show the assistant state, recognized phrases and spoken answers in the interface
     def connect_interface(self):
         ui = self.interface_manager
-        # The moment the last phrase was recognized: the time to the first word of the answer is counted from it
-        answer_timer = {"started": None}
 
         def on_phrase(text, stats):
-            answer_timer["started"] = time.perf_counter()
+            self._answer_started = time.perf_counter()
             ui.add_message(
                 "user", text, f"распознавание {stats['decode_ms']:.0f} мс · запись {stats['audio_s']:.1f} с"
             )
 
         def on_speak(text):
-            started, answer_timer["started"] = answer_timer["started"], None
+            started, self._answer_started = self._answer_started, None
             meta = f"ответ через {(time.perf_counter() - started) * 1000:.0f} мс" if started else None
             ui.add_message("assistant", text, meta)
             ui.set_state("speaking")
 
+        def on_state(state):
+            ui.set_state(state)
+            # The speech recognition light in the status bar follows what the microphone is doing
+            if state == "paused":
+                ui.set_service("stt", "off")
+            elif state in ("listening", "processing"):
+                ui.set_service("stt", "busy")
+            else:
+                ui.set_service("stt", "ok")
+
         self.tts.on_speak = on_speak
-        self.speech_recognizer.on_state = ui.set_state
+        self.tts.on_status = lambda state: ui.set_service("tts", state)
+        self.chat_gpt.on_status = lambda state: ui.set_service("ai", state)
+        self.speech_recognizer.on_state = on_state
         self.speech_recognizer.on_phrase = on_phrase
         self.speech_recognizer.on_activation = lambda info: ui.add_message("system", self.describe_activation(info))
-        self.speech_recognizer.on_model = lambda text: ui.add_message("system", text)
+        self.speech_recognizer.on_model = lambda text: (ui.add_message("system", text), ui.refresh_models())
+        ui.set_service("stt", "ok")
+        ui.set_service("tts", "ok")
         # The big model (if it was downloaded) loads in the background while the assistant already works
         self.speech_recognizer.start_big_model_loading()
+
+    # A command typed in the interface instead of being said. It runs on the assistant thread,
+    # when the microphone is free, exactly like a spoken command. Returns a Future, or None for an empty text.
+    def handle_text(self, text):
+        original = (text or "").strip()
+        # Spoken commands arrive in lower case without punctuation, so the typed ones are brought to the same form
+        query = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", original.lower())).strip()
+        if not query:
+            return None
+        ui = self.interface_manager
+        ui.add_message("user", original, "введено текстом")
+        ui.set_state("processing")
+        self._answer_started = time.perf_counter()
+        return self.speech_recognizer.run_exclusive(lambda: self._run_typed(query))
+
+    def _run_typed(self, query):
+        try:
+            self.process_command(query)
+        except Exception:
+            logger.exception("Ошибка при обработке введённой команды: %s", query)
+        finally:
+            self.interface_manager.set_state("paused" if self.speech_recognizer.paused else "idle")
+
+    # Switch the microphone off or on: while it is off the assistant does not listen for the wake word
+    def set_listening(self, enabled):
+        self.speech_recognizer.set_paused(not enabled)
+
+    @property
+    def listening(self):
+        return not self.speech_recognizer.paused
+
+    # What the "Model" page of the interface shows
+    def models_info(self):
+        recognizer = self.speech_recognizer
+        return {
+            "small_model": "vosk-model-small-ru-0.22",
+            "big_model": Path(recognizer.big_model_path).name if recognizer.big_model_path else None,
+            "big_model_state": recognizer.big_model_state,
+            "llm": self.chat_gpt.model_name,
+        }
 
     # One line for the dialog: what was heard as the wake word, whether the voice matched and how long it took
     @staticmethod
@@ -260,8 +315,9 @@ class Assistant:
                 last_active_time = time.time()
                 timed_out = True
                 while time.time() - last_active_time < self.session_timeout:
-                    if self.speech_recognizer.has_pending_tasks():
-                        # The interface needs the microphone (voice samples, microphone check)
+                    if self.speech_recognizer.has_pending_tasks() or self.speech_recognizer.paused:
+                        # The interface needs the microphone (voice samples, microphone check, a typed command)
+                        # or the microphone was switched off
                         timed_out = False
                         break
                     query = self.speech_recognizer.listen_command()
@@ -277,4 +333,5 @@ class Assistant:
             except Exception:
                 # Microphone or audio stream failure: log it and try again after a pause
                 logger.exception("Ошибка в основном цикле, повторная попытка через 2 секунды")
+                self.interface_manager.set_service("stt", "error")
                 time.sleep(2)

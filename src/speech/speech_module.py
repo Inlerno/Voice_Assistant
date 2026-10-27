@@ -82,6 +82,10 @@ class SpeechRecognizer:
         self.command_model = self.model
         self.big_model_path = find_big_model() if big_model_path == "auto" else big_model_path
         self._big_model_started = False
+        # What the interface shows about the big model: none (not downloaded), pending, loading, ready or failed
+        self.big_model_state = "none" if self.big_model_path is None else "pending"
+        # While the microphone is switched off the assistant does not listen for the wake word
+        self.paused = False
         self.input_device = input_device or sd.default.device[0]
         self.audio_queue = queue.Queue()
         # What the owner's wake word sounds like, used to tell the owner from everybody else
@@ -122,16 +126,19 @@ class SpeechRecognizer:
         path = Path(self.big_model_path)
         started = time.perf_counter()
         logger.info("Загрузка большой модели %s", path.name)
+        self.big_model_state = "loading"
         self._notify(self.on_model, "Загружаю большую модель распознавания, это может занять до минуты. "
                                     "Пока команды распознаёт маленькая.")
         try:
             model = vosk.Model(str(path))
         except Exception:
             logger.exception("Не удалось загрузить большую модель %s", path)
+            self.big_model_state = "failed"
             self._notify(self.on_model, "Большую модель загрузить не удалось (см. журнал), работает маленькая.")
             return
         # One assignment: a command that is being recognized right now keeps the model it started with
         self.command_model = model
+        self.big_model_state = "ready"
         seconds = time.perf_counter() - started
         logger.info("Большая модель готова за %.0f с", seconds)
         self._notify(self.on_model, f"Большая модель {path.name} готова ({seconds:.0f} с). Команды теперь "
@@ -226,13 +233,34 @@ class SpeechRecognizer:
         self._notify(self.on_state, "idle")
         while True:
             self._run_pending_tasks()
+            if self.paused:
+                self._wait_while_paused()
+                continue
             if self._wait_for_wake_word(activation_words):
                 # The microphone is already closed here, so the answer is not recorded
                 if callback:
                     callback()
                 return
 
+    # Switch the microphone off or on. The interface button calls it from its own thread.
+    def set_paused(self, paused: bool):
+        self.paused = bool(paused)
+        # The assistant thread may be sitting inside a command session: the state is shown at once
+        self._notify(self.on_state, "paused" if self.paused else "idle")
+
+    # The microphone is off: nothing is listened to, only the jobs of the interface (they ask for the microphone
+    # themselves) still run
+    def _wait_while_paused(self):
+        self._notify(self.on_state, "paused")
+        logger.info("Микрофон выключен")
+        while self.paused and not self.has_pending_tasks():
+            time.sleep(0.1)
+        if not self.paused:
+            logger.info("Микрофон включён")
+            self._notify(self.on_state, "idle")
+
     # Returns True when the wake word of the owner was heard, False when a job needs the microphone
+    # or the microphone was switched off
     def _wait_for_wake_word(self, activation_words):
         samplerate = self._samplerate()
         blocksize = int(samplerate * WAKE_BLOCK_SECONDS)
@@ -245,14 +273,17 @@ class SpeechRecognizer:
         with self._input_stream(samplerate, blocksize):
             logger.info("Ожидание активационного слова 'Астра'...")
             while True:
-                utterance = self._read_utterance(rec, state, 0.5, self.has_pending_tasks)
+                utterance = self._read_utterance(rec, state, 0.5, self._must_stop_listening)
                 if utterance is None:
-                    if self.has_pending_tasks():
+                    if self._must_stop_listening():
                         return False
                     continue
                 text, audio, decode_ms = utterance
                 if self._check_wake_word(text, audio, samplerate, decode_ms, activation_words):
                     return True
+
+    def _must_stop_listening(self) -> bool:
+        return self.paused or self.has_pending_tasks()
 
     # Decide whether a recognized phrase is the wake word said by the owner
     def _check_wake_word(self, text, audio, samplerate, decode_ms, activation_words) -> bool:
