@@ -96,13 +96,21 @@ class VoiceAssistantApp:
         bar = ctk.CTkFrame(self.root, fg_color=t.BG, corner_radius=0, height=64)
         bar.grid(row=0, column=0, sticky="ew")
         bar.grid_columnconfigure(1, weight=1)
+        bar.grid_rowconfigure(0, weight=1)
         bar.grid_propagate(False)
-        ctk.CTkLabel(bar, text="Astra", font=(t.FONT, 18, "bold"), text_color=t.TEXT,
-                     image=g.icon("sparkle", t.ACCENT, 20), compound="left").grid(
-            row=0, column=0, padx=(26, 10), sticky="w"
-        )
+        logo = ctk.CTkLabel(bar, text="Astra", font=(t.FONT, 18, "bold"), text_color=t.TEXT,
+                            image=g.icon("sparkle", t.ACCENT, 20), compound="left")
+        logo.grid(row=0, column=0, padx=(26, 10), sticky="w")
         tabs = ctk.CTkFrame(bar, fg_color="transparent")
-        tabs.grid(row=0, column=1, sticky="w")
+        # The tabs are in the middle of the window, the logo stays on the left
+        def center_tabs(_event=None):
+            # In the middle of the window, but never over the logo
+            half = tabs.winfo_reqwidth() // 2
+            x = max(bar.winfo_width() // 2, logo.winfo_reqwidth() + 46 + half)
+            tabs.place(x=x, rely=0.5, anchor="center")
+
+        bar.bind("<Configure>", center_tabs)
+        center_tabs()
         for column, (key, title, icon_name) in enumerate(t.PAGES):
             cell = ctk.CTkFrame(tabs, fg_color="transparent")
             cell.grid(row=0, column=column, padx=2)

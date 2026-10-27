@@ -86,3 +86,23 @@ def page_header(master, title, subtitle):
         row=1, column=0, sticky="w"
     )
     return header
+
+
+# Width of the content of a page: on a wide window it stays in the middle instead of stretching to the edges
+CONTENT_MAX_WIDTH = 920
+CONTENT_MARGIN = 24
+
+
+def center_content(page, container):
+    """Keeps everything gridded into the container in a centered column of limited width."""
+    state = {"side": None}
+
+    def update(_event=None):
+        side = max(CONTENT_MARGIN, (page.winfo_width() - CONTENT_MAX_WIDTH) // 2)
+        if side == state["side"]:
+            return
+        state["side"] = side
+        for child in container.grid_slaves():
+            child.grid_configure(padx=side)
+
+    page.bind("<Configure>", update, add="+")

@@ -3,7 +3,7 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 from src.interface import theme as t
-from src.interface.widgets import Card, make_button, page_header
+from src.interface.widgets import Card, center_content, make_button, page_header
 
 PAGE_PADDING = 24
 
@@ -13,8 +13,9 @@ def scrolling_page(page, title, subtitle):
     page.grid_columnconfigure(0, weight=1)
     page.grid_rowconfigure(0, weight=1)
     scroll = ctk.CTkScrollableFrame(page, fg_color="transparent", corner_radius=0)
-    scroll.grid(row=0, column=0, sticky="nsew", padx=PAGE_PADDING)
+    scroll.grid(row=0, column=0, sticky="nsew")
     scroll.grid_columnconfigure(0, weight=1)
+    center_content(page, scroll)
     header = page_header(scroll, title, subtitle)
     header.grid(row=0, column=0, sticky="ew", pady=(18, 14))
     return scroll, header
@@ -125,6 +126,7 @@ class LogPage(ctk.CTkFrame):
         self.grid_rowconfigure(1, weight=1)
         header = page_header(self, "Журнал", "Что происходит внутри ассистента")
         header.grid(row=0, column=0, sticky="ew", padx=PAGE_PADDING, pady=(18, 14))
+        center_content(self, self)
         make_button(header, "Очистить", self.clear, "secondary", width=110, height=34).grid(
             row=0, column=1, rowspan=2, sticky="e"
         )

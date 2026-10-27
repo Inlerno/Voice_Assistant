@@ -7,7 +7,7 @@ import sounddevice as sd
 
 from src.audio.mic_test import MicCheckResult, check_microphone
 from src.interface import theme as t
-from src.interface.widgets import Card, make_button, make_progress, page_header
+from src.interface.widgets import Card, center_content, make_button, make_progress, page_header
 from src.speech.voice_profile import SENSITIVITY_MAX, SENSITIVITY_MIN
 
 MIC_TEST_SECONDS = 5
@@ -63,8 +63,9 @@ class VoicePage(ctk.CTkFrame):
         self.grid_rowconfigure(0, weight=1)
         # The cards do not fit into a small window, so they live in a scrollable area
         scroll = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0)
-        scroll.grid(row=0, column=0, sticky="nsew", padx=24)
+        scroll.grid(row=0, column=0, sticky="nsew")
         scroll.grid_columnconfigure(0, weight=1)
+        center_content(self, scroll)
         page_header(scroll, "Голос", "Микрофон и голос владельца").grid(row=0, column=0, sticky="ew", pady=(18, 14))
 
         self._build_device_card(scroll, 1)
