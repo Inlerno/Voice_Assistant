@@ -26,3 +26,9 @@ src/config/voice_profile.tmp
 # Python cache
 __pycache__/
 *.pyc
+
+# Big Vosk models are downloaded by scripts/download_vosk_model.py, they are too large for git
+src/assets/vosk-model-ru-*/
+src/assets/*.zip
+src/assets/*.zip.part
+src/assets/*.unpacking/

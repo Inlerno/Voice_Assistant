@@ -68,6 +68,9 @@ class Assistant:
         self.speech_recognizer.on_state = ui.set_state
         self.speech_recognizer.on_phrase = on_phrase
         self.speech_recognizer.on_activation = lambda info: ui.add_message("system", self.describe_activation(info))
+        self.speech_recognizer.on_model = lambda text: ui.add_message("system", text)
+        # The big model (if it was downloaded) loads in the background while the assistant already works
+        self.speech_recognizer.start_big_model_loading()
 
     # One line for the dialog: what was heard as the wake word, whether the voice matched and how long it took
     @staticmethod

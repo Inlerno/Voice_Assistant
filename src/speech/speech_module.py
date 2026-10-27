@@ -5,6 +5,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import Future
+from pathlib import Path
 
 import sounddevice as sd
 import vosk
@@ -12,6 +13,21 @@ import vosk
 from src.speech.voice_profile import VoiceProfile, sample_features, word_features
 
 logger = logging.getLogger(__name__)
+
+ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
+# Big Russian models, the best one first. They are not stored in git: scripts/download_vosk_model.py puts one
+# of them into src/assets, and it is picked up from there without any settings
+BIG_MODEL_NAMES = ("vosk-model-ru-0.42", "vosk-model-ru-0.22")
+
+
+# The big model that lies in the assets folder, or None when it has not been downloaded
+def find_big_model(assets_dir=ASSETS_DIR):
+    for name in BIG_MODEL_NAMES:
+        path = Path(assets_dir) / name
+        # Only unpacked models count: an interrupted unpacking leaves a folder without these parts
+        if (path / "am").is_dir() and (path / "conf").is_dir() and (path / "graph").is_dir():
+            return path
+    return None
 
 # How much audio before the end of a phrase is kept to analyze the wake word
 WAKE_BUFFER_SECONDS = 3.0
@@ -57,8 +73,15 @@ def crop_to_words(audio: bytes, buffer_start_s: float, words: list, samplerate: 
 
 
 class SpeechRecognizer:
-    def __init__(self, model_path="src/assets/vosk-model-small-ru-0.22", input_device=None, profile=None):
+    # model_path is the small model: it starts at once and is the only one that works with the wake word grammar.
+    # big_model_path is the big model for commands: "auto" looks for it in the assets folder, None turns it off.
+    def __init__(self, model_path="src/assets/vosk-model-small-ru-0.22", input_device=None, profile=None,
+                 big_model_path="auto"):
         self.model = vosk.Model(model_path)
+        # The model that recognizes commands: the small one until the big one is loaded
+        self.command_model = self.model
+        self.big_model_path = find_big_model() if big_model_path == "auto" else big_model_path
+        self._big_model_started = False
         self.input_device = input_device or sd.default.device[0]
         self.audio_queue = queue.Queue()
         # What the owner's wake word sounds like, used to tell the owner from everybody else
@@ -70,6 +93,8 @@ class SpeechRecognizer:
         self.on_state = None
         self.on_phrase = None
         self.on_activation = None
+        # on_model(text): the state of the big model, for example that it has been loaded
+        self.on_model = None
         # Jobs that need the microphone to themselves, they run on the assistant thread
         self._tasks = queue.Queue()
 
@@ -79,6 +104,38 @@ class SpeechRecognizer:
                 callback(*args)
             except Exception:
                 logger.exception("Interface callback error")
+
+    # ---------- Big model ----------
+
+    # Load the big model in the background, the assistant works with the small one meanwhile.
+    # Returns the thread, or None when there is no big model or it has been started already.
+    # Called after the callbacks are set, so the interface does not miss the messages.
+    def start_big_model_loading(self):
+        if self.big_model_path is None or self._big_model_started:
+            return None
+        self._big_model_started = True
+        thread = threading.Thread(target=self._load_big_model, daemon=True)
+        thread.start()
+        return thread
+
+    def _load_big_model(self):
+        path = Path(self.big_model_path)
+        started = time.perf_counter()
+        logger.info("Загрузка большой модели %s", path.name)
+        self._notify(self.on_model, "Загружаю большую модель распознавания, это может занять до минуты. "
+                                    "Пока команды распознаёт маленькая.")
+        try:
+            model = vosk.Model(str(path))
+        except Exception:
+            logger.exception("Не удалось загрузить большую модель %s", path)
+            self._notify(self.on_model, "Большую модель загрузить не удалось (см. журнал), работает маленькая.")
+            return
+        # One assignment: a command that is being recognized right now keeps the model it started with
+        self.command_model = model
+        seconds = time.perf_counter() - started
+        logger.info("Большая модель готова за %.0f с", seconds)
+        self._notify(self.on_model, f"Большая модель {path.name} готова ({seconds:.0f} с). Команды теперь "
+                                    f"распознаются точнее, но немного дольше.")
 
     # ---------- Exclusive jobs ----------
 
@@ -306,7 +363,7 @@ class SpeechRecognizer:
         self._notify(self.on_state, "listening")
         try:
             samplerate = self._samplerate()
-            rec = vosk.KaldiRecognizer(self.model, samplerate)
+            rec = vosk.KaldiRecognizer(self.command_model, samplerate)
             block_seconds = 0.2
             blocksize = int(samplerate * block_seconds)
             command_queue = queue.Queue()

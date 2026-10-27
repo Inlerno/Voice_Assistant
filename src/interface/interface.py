@@ -682,7 +682,8 @@ class VoiceAssistantApp:
             return
         device = self.selected_device_index()
         recognizer = getattr(self.assistant, "speech_recognizer", None)
-        model = getattr(recognizer, "model", None)
+        # The model that recognizes commands, so the test shows what the assistant will really understand
+        model = getattr(recognizer, "command_model", None) or getattr(recognizer, "model", None)
         self.mic_test_stop = threading.Event()
         self.mic_test_running = True
         self.meter_value = 0.0
