@@ -98,6 +98,27 @@ def _draw_icon(name, size, color, stroke=1.9):
         pen.line([(6, 9), (12, 15), (18, 9)])
     elif name == "play":
         pen.polygon([(8, 5), (19, 12), (8, 19)])
+    elif name == "clock":
+        pen.arc((3.5, 3.5, 20.5, 20.5), 0, 360)
+        pen.line([(12, 7.5), (12, 12), (15.5, 14)])
+    elif name == "check":
+        pen.line([(5, 12.5), (10, 17.5), (19, 7)])
+    elif name == "close":
+        pen.line([(6.5, 6.5), (17.5, 17.5)])
+        pen.line([(17.5, 6.5), (6.5, 17.5)])
+    elif name == "grid":
+        for x, y in ((4, 4), (13.5, 4), (4, 13.5), (13.5, 13.5)):
+            pen.rounded_rect((x, y, x + 6.5, y + 6.5), 1.6)
+    elif name == "bell":
+        pen.line([(5.5, 17.5), (18.5, 17.5)])
+        pen.line([(7, 17.5), (7, 11), (8.5, 7.5), (12, 6), (15.5, 7.5), (17, 11), (17, 17.5)])
+        pen.arc((10, 17.5, 14, 21.5), 0, 180)
+        pen.line([(12, 3.5), (12, 6)])
+    elif name == "hourglass":
+        pen.line([(6.5, 3.5), (17.5, 3.5)])
+        pen.line([(6.5, 20.5), (17.5, 20.5)])
+        pen.line([(8, 3.5), (8, 8), (12, 12), (16, 8), (16, 3.5)])
+        pen.line([(8, 20.5), (8, 16), (12, 12), (16, 16), (16, 20.5)])
     elif name == "sparkle":
         pen.fill_polygon(_sparkle_points())
     else:

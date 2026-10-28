@@ -7,7 +7,7 @@ from PIL import Image, ImageTk
 
 from src.interface import graphics as g
 from src.interface import theme as t
-from src.interface.widgets import make_button
+from src.interface.widgets import make_button, scale_of
 
 # Width of the dialog column on a wide window, in pixels
 CONTENT_WIDTH = 860
@@ -35,28 +35,36 @@ class HeroCanvas(tk.Canvas):
 
     def __init__(self, master):
         super().__init__(master, highlightthickness=0, bd=0)
+        self.factor = 1.0
         self._photo = None
         self._spark = None
         self._redraw_job = None
         self.dark = True
         self.background = self.create_image(0, 0, anchor="nw")
-        self.wordmark = self.create_text(0, 0, text="Astra", font=(t.FONT, 58, "bold"), anchor="center")
+        self.wordmark = self.create_text(0, 0, text="Astra", anchor="center")
         self.spark = self.create_image(0, 0, anchor="center")
-        self.greeting = self.create_text(0, 0, text=greeting(), font=(t.FONT, 20, "bold"), anchor="center")
+        self.greeting = self.create_text(0, 0, text=greeting(), anchor="center")
         self.bind("<Configure>", self._schedule_redraw)
         self.apply_theme()
 
-    # The vertical center of the welcome screen: the input field sits here
+    # The vertical center of the welcome screen (in the units of the page): the input field sits here
     @staticmethod
     def center_y(height):
         return max(int(height * 0.52), 250)
+
+    # The texts are measured in pixels, so they follow the display scaling exactly like the other widgets
+    def _apply_scale(self):
+        self.factor = scale_of(self.master)
+        self.itemconfigure(self.wordmark, font=(t.FONT, -int(76 * self.factor), "bold"))
+        self.itemconfigure(self.greeting, font=(t.FONT, -int(26 * self.factor), "bold"))
 
     def apply_theme(self):
         self.dark = is_dark()
         self.configure(bg=t.pick(t.BG, self.dark))
         self.itemconfigure(self.wordmark, fill=t.pick(t.TEXT, self.dark))
         self.itemconfigure(self.greeting, fill=t.pick(t.TEXT, self.dark))
-        self._spark = ImageTk.PhotoImage(g.sparkle_image(34, t.pick(t.ACCENT, self.dark)))
+        self._apply_scale()
+        self._spark = ImageTk.PhotoImage(g.sparkle_image(int(34 * self.factor), t.pick(t.ACCENT, self.dark)))
         self.itemconfigure(self.spark, image=self._spark)
         self._redraw()
 
@@ -77,11 +85,12 @@ class HeroCanvas(tk.Canvas):
         glow = g.glow_image(self.dark).resize((width, height), Image.BICUBIC)
         self._photo = ImageTk.PhotoImage(glow)
         self.itemconfigure(self.background, image=self._photo)
-        centre = self.center_y(height)
-        self.coords(self.wordmark, width / 2 - 20, centre - 128)
+        factor = self.factor
+        centre = self.center_y(height / factor) * factor
+        self.coords(self.wordmark, width / 2 - 20 * factor, centre - 128 * factor)
         left, top, right, bottom = self.bbox(self.wordmark)
-        self.coords(self.spark, right + 24, top + 20)
-        self.coords(self.greeting, width / 2, centre - 62)
+        self.coords(self.spark, right + 24 * factor, top + 20 * factor)
+        self.coords(self.greeting, width / 2, centre - 62 * factor)
 
 
 class InputBar(ctk.CTkFrame):
@@ -207,32 +216,39 @@ class HomePage(ctk.CTkFrame):
             width=160,
         ).grid(row=0, column=1, padx=5)
         make_button(
+            self.chips, "Дела", lambda: app.show_page("planner"), "secondary", width=110,
+            image=g.icon("check", t.TEXT, 18),
+        ).grid(row=0, column=2, padx=5)
+        make_button(
             self.chips, "Команды", lambda: app.show_page("commands"), "secondary", width=130,
             image=g.icon("terminal", t.TEXT, 18),
-        ).grid(row=0, column=2, padx=5)
+        ).grid(row=0, column=3, padx=5)
         self.bind("<Configure>", lambda _e: self.layout())
         self.layout()
 
     # ---------- Layout ----------
 
     def layout(self):
-        width, height = self.winfo_width(), self.winfo_height()
-        if width < 50 or height < 50:
+        # winfo_* give real pixels, place() and configure() of customtkinter expect pixels before the scaling
+        factor = scale_of(self)
+        real_width, real_height = self.winfo_width(), self.winfo_height()
+        if real_width < 50 or real_height < 50:
             return
+        width, height = int(real_width / factor), int(real_height / factor)
         bar_width = max(420, min(780, int(width * 0.74)))
+        self.bar.configure(width=bar_width)
         if self.hero_mode:
             centre = self.canvas.center_y(height)
-            self.bar.configure(width=bar_width)
             self.bar.place(x=width // 2, y=centre, anchor="center")
             self.chips.place(x=width // 2, y=centre + 46, anchor="n")
         else:
             self.chat.configure(width=width, height=max(120, height - 98))
             self.chat.place(x=0, y=0)
-            self.bar.configure(width=bar_width)
             self.bar.place(x=width // 2, y=height - 22, anchor="s")
             self.chips.place_forget()
         self.bar.lift()
-        side = max(16, (width - CONTENT_WIDTH) // 2)
+        # The side padding is in real pixels: it is set with the plain pack_configure
+        side = max(int(16 * factor), (real_width - int(CONTENT_WIDTH * factor)) // 2)
         if side != self.side_padding:
             self.side_padding = side
             for row in self.rows:
@@ -263,7 +279,8 @@ class HomePage(ctk.CTkFrame):
                 self.chat, text=f"{datetime.now().strftime('%H:%M:%S')} · {text}", font=(t.FONT, 11),
                 text_color=t.MUTED, wraplength=self.wrap_length, justify="left", anchor="w",
             )
-            label.pack(fill="x", padx=self.side_padding + 8, pady=(0, 8))
+            label.pack(fill="x", pady=(0, 8))
+            label.pack_configure(padx=self.side_padding + 8)
             self.rows.append(label)
             self.message_labels.append(label)
             self._scroll_down()
@@ -274,7 +291,8 @@ class HomePage(ctk.CTkFrame):
             text = text[:1].upper() + text[1:]
         side = "e" if is_user else "w"
         row = ctk.CTkFrame(self.chat, fg_color="transparent")
-        row.pack(fill="x", pady=(0, 12), padx=self.side_padding)
+        row.pack(fill="x", pady=(0, 12))
+        row.pack_configure(padx=self.side_padding)
         self.rows.append(row)
         bubble = ctk.CTkFrame(row, corner_radius=20, fg_color=t.BUBBLE_USER if is_user else t.BUBBLE_BOT)
         bubble.pack(anchor=side)
@@ -317,7 +335,7 @@ class HomePage(ctk.CTkFrame):
         self.layout()
 
     def _on_chat_resize(self, event):
-        wrap = max(240, min(620, int(event.width * 0.62)))
+        wrap = max(240, min(620, int(event.width / scale_of(self) * 0.62)))
         if abs(wrap - self.wrap_length) < 8:
             return
         self.wrap_length = wrap

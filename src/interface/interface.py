@@ -10,9 +10,12 @@ import customtkinter as ctk
 from src.interface import graphics as g
 from src.interface import theme as t
 from src.interface.home_page import HomePage
-from src.interface.pages import CommandsPage, LogPage, ModelPage, SettingsPage, confirm_risky
+from src.interface.apps_page import AppsPage
+from src.interface.notification import Notification
+from src.interface.pages import CommandsPage, LogPage, SettingsPage, confirm_risky
+from src.interface.planner_page import PlannerPage
 from src.interface.voice_page import VoicePage, device_by_index, short_device_name
-from src.interface.widgets import StatusLight
+from src.interface.widgets import StatusLight, scale_of
 
 
 # Logging handler that passes records to the interface through a thread-safe queue
@@ -33,6 +36,23 @@ class TkinterLogHandler(logging.Handler):
             self.handleError(record)
 
 
+# The window of 1120x720 does not fit a small laptop screen with the Windows scaling of 125-150%:
+# the size is cut to the screen and the window is put in the middle
+def fit_window(root, width=1120, height=720, min_width=940, min_height=600):
+    try:
+        scale = root._get_window_scaling() or 1
+    except Exception:
+        scale = 1
+    screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
+    # What is really available in the units of the window (a part of the height is taken by the taskbar)
+    usable_w, usable_h = screen_w / scale * 0.96, (screen_h - 90) / scale * 0.96
+    width, height = min(width, int(usable_w)), min(height, int(usable_h))
+    root.minsize(min(min_width, width), min(min_height, height))
+    x = max(0, int((screen_w - width * scale) / 2))
+    y = max(0, int((screen_h - height * scale) / 2) - 20)
+    root.geometry(f"{width}x{height}+{x}+{y}")
+
+
 # Graphical interface of the voice assistant
 class VoiceAssistantApp:
     def __init__(self, assistant):
@@ -45,14 +65,14 @@ class VoiceAssistantApp:
         self.activation_word = self._get_activation_word()
         self.tabs = {}
         self.pages = {}
+        self.notifications = []
 
         ctk.set_appearance_mode(getattr(assistant, "appearance", "Dark"))
         ctk.set_default_color_theme("blue")
 
         self.root = ctk.CTk(fg_color=t.BG)
         self.root.title("Астра — голосовой помощник")
-        self.root.geometry("1120x720")
-        self.root.minsize(940, 600)
+        fit_window(self.root)
         self.root.grid_columnconfigure(0, weight=1)
         self.root.grid_rowconfigure(1, weight=1)
 
@@ -90,6 +110,14 @@ class VoiceAssistantApp:
     def refresh_models(self):
         self.events.put(("models",))
 
+    # Timers, alarms, reminders or tasks have changed (called from any thread)
+    def planner_changed(self):
+        self.events.put(("planner",))
+
+    # Something came due: a window on top of everything (called from any thread)
+    def notify(self, item, message):
+        self.events.put(("notify", item, message))
+
     # ---------- Window construction ----------
 
     def _build_navigation(self):
@@ -102,15 +130,8 @@ class VoiceAssistantApp:
                             image=g.icon("sparkle", t.ACCENT, 20), compound="left")
         logo.grid(row=0, column=0, padx=(26, 10), sticky="w")
         tabs = ctk.CTkFrame(bar, fg_color="transparent")
-        # The tabs are in the middle of the window, the logo stays on the left
-        def center_tabs(_event=None):
-            # In the middle of the window, but never over the logo
-            half = tabs.winfo_reqwidth() // 2
-            x = max(bar.winfo_width() // 2, logo.winfo_reqwidth() + 46 + half)
-            tabs.place(x=x, rely=0.5, anchor="center")
-
-        bar.bind("<Configure>", center_tabs)
-        center_tabs()
+        self.tab_titles = {key: title for key, title, _ in t.PAGES}
+        self.tabs_compact = False
         for column, (key, title, icon_name) in enumerate(t.PAGES):
             cell = ctk.CTkFrame(tabs, fg_color="transparent")
             cell.grid(row=0, column=column, padx=2)
@@ -123,6 +144,26 @@ class VoiceAssistantApp:
             underline = ctk.CTkFrame(cell, width=10, height=2, corner_radius=1, fg_color="transparent")
             underline.pack(fill="x", padx=16, pady=(1, 0))
             self.tabs[key] = (button, underline, icon_name)
+        tabs.update_idletasks()
+        full_width = tabs.winfo_reqwidth()
+
+        # The tabs are in the middle of the window, the logo stays on the left. When the window is too narrow
+        # for all the captions, only the open tab keeps its caption.
+        def center_tabs(_event=None):
+            factor = scale_of(bar)
+            logo_width = logo.winfo_reqwidth() + int(46 * factor)
+            compact = bar.winfo_width() < logo_width + full_width + int(24 * factor)
+            if compact != self.tabs_compact:
+                self.tabs_compact = compact
+                self.refresh_tabs()
+                tabs.update_idletasks()
+            half = tabs.winfo_reqwidth() // 2
+            x = max(bar.winfo_width() // 2, logo_width + half)
+            # place() multiplies the position by the display scaling itself
+            tabs.place(x=x / factor, rely=0.5, anchor="center")
+
+        bar.bind("<Configure>", center_tabs)
+        center_tabs()
         self.nav_mic = ctk.CTkLabel(bar, text="", font=(t.FONT, 12), text_color=t.MUTED)
 
     def _build_pages(self):
@@ -132,14 +173,16 @@ class VoiceAssistantApp:
         stack.grid_rowconfigure(0, weight=1)
         self.home = HomePage(stack, self)
         self.commands_page = CommandsPage(stack, self)
-        self.model_page = ModelPage(stack, self)
+        self.planner_page = PlannerPage(stack, self)
+        self.apps_page = AppsPage(stack, self)
         self.voice_page = VoicePage(stack, self)
         self.log_page = LogPage(stack, self)
         self.settings_page = SettingsPage(stack, self)
         self.pages = {
             "home": self.home,
+            "planner": self.planner_page,
+            "apps": self.apps_page,
             "commands": self.commands_page,
-            "model": self.model_page,
             "voice": self.voice_page,
             "log": self.log_page,
             "settings": self.settings_page,
@@ -179,9 +222,14 @@ class VoiceAssistantApp:
             return
         self.current_page = name
         self.pages[name].tkraise()
+        self.refresh_tabs()
+
+    # Colors and captions of the tabs: the open one is bright, in a narrow window only it has a caption
+    def refresh_tabs(self):
         for key, (button, underline, icon_name) in self.tabs.items():
-            active = key == name
+            active = key == self.current_page
             button.configure(
+                text=self.tab_titles[key] if active or not self.tabs_compact else "",
                 text_color=t.TEXT if active else t.MUTED,
                 image=g.icon(icon_name, t.TEXT if active else t.MUTED, 18),
             )
@@ -229,6 +277,22 @@ class VoiceAssistantApp:
         if not triggers or not confirm_risky(self.root, command):
             return
         self.submit_text(triggers[0].strip())
+
+    def show_notification(self, item, message):
+        window = Notification(self, item, message, self.close_notification)
+        self.notifications.append(window)
+        window.place_at(len(self.notifications) - 1)
+        for index, other in enumerate(self.notifications):
+            other.place_at(index)
+
+    def close_notification(self, window):
+        if window in self.notifications:
+            self.notifications.remove(window)
+        for index, other in enumerate(self.notifications):
+            other.place_at(index)
+
+    def open_application(self, entry):
+        self.apps_page.open_app(entry)
 
     def on_appearance_changed(self):
         self.root.after(80, self.home.apply_theme)
@@ -285,7 +349,11 @@ class VoiceAssistantApp:
             if light is not None:
                 light.set_state(event[2])
         elif kind == "models":
-            self.model_page.refresh()
+            self.settings_page.models.refresh()
+        elif kind == "planner":
+            self.planner_page.refresh()
+        elif kind == "notify":
+            self.show_notification(event[1], event[2])
         elif kind in ("mic_started", "mic_level", "mic_result", "enroll_progress", "enroll_done"):
             self.voice_page.handle_event(kind, *event[1:])
 

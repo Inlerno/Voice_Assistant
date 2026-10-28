@@ -13,6 +13,10 @@ from rapidfuzz import fuzz
 from src.integrations.chat_gpt import ChatGPT
 from src.interface.interface import VoiceAssistantApp
 from src.network import NetworkActions
+from src.productivity.apps import AppLauncher
+from src.productivity.planner import ALARM, KIND_TITLES, TIMER, Planner
+from src.productivity.skills import Productivity
+from src.productivity import ru_parse
 from src.audio.sound_module import SoundPlayer
 from src.speech.speech_module import SpeechRecognizer
 from src.system.system_control import SystemControl
@@ -38,6 +42,10 @@ class Assistant:
         self.network_actions = NetworkActions()
         self.system_control = SystemControl(self.tts.speak, self.speech_recognizer.listen_command)
         self.chat_gpt = ChatGPT()
+        # Timers, alarms, reminders, tasks and programs: the planner works in its own thread
+        self.planner = Planner(on_fire=self.on_planner_fire, on_change=self._planner_changed)
+        self.apps = AppLauncher()
+        self.productivity = Productivity(self.planner, self.apps)
 
         self.sound_player.play_sound('start')
         self.session_timeout = 15
@@ -46,6 +54,7 @@ class Assistant:
 
         self.interface_manager = VoiceAssistantApp(self)
         self.connect_interface()
+        self.planner.start()
         threading.Thread(target=self.main, daemon=True).start()
         self.interface_manager.start_interface()
 
@@ -92,7 +101,7 @@ class Assistant:
     def handle_text(self, text):
         original = (text or "").strip()
         # Spoken commands arrive in lower case without punctuation, so the typed ones are brought to the same form
-        query = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", original.lower())).strip()
+        query = re.sub(r"\s+", " ", re.sub(r"[^\w\s:]|(?<!\d):|:(?!\d)", " ", original.lower())).strip()
         if not query:
             return None
         ui = self.interface_manager
@@ -108,6 +117,53 @@ class Assistant:
             logger.exception("Ошибка при обработке введённой команды: %s", query)
         finally:
             self.interface_manager.set_state("paused" if self.speech_recognizer.paused else "idle")
+
+    # ---------- Timers, alarms, reminders ----------
+
+    def _planner_changed(self):
+        ui = getattr(self, "interface_manager", None)
+        if ui is not None:
+            ui.planner_changed()
+
+    # Something came due: it is said on the assistant thread (the speech engine belongs to it) and shown in a window
+    def on_planner_fire(self, item):
+        message = self.describe_fired(item)
+        logger.info("Сработало: %s", message)
+        self.interface_manager.notify(item, message)
+
+        def announce():
+            try:
+                self.sound_player.play_sound('start')
+                for _ in range(2 if item["kind"] == ALARM else 1):
+                    self.tts.speak(message)
+            finally:
+                self.interface_manager.set_state("paused" if self.speech_recognizer.paused else "idle")
+
+        self.speech_recognizer.run_exclusive(announce)
+
+    @staticmethod
+    def describe_fired(item):
+        text = item.get("text") or ""
+        if item["kind"] == TIMER:
+            length = ru_parse.describe_duration(item["length"], accusative=True) if item.get("length") else ""
+            base = f"Таймер на {length} сработал" if length else "Таймер сработал"
+            return f"{base}: {text}." if text else f"{base}."
+        if item["kind"] == ALARM:
+            clock = item["due"][11:16]
+            return f"Будильник! Уже {clock}." + (f" {text}." if text else "")
+        prefix = "Напоминаю, пропущено" if item.get("missed") else "Напоминаю"
+        return f"{prefix}: {text}." if text else f"{KIND_TITLES[item['kind']]}."
+
+    # What the "Планы" page does with a phrase typed into its field: the same commands as by voice
+    def quick_add(self, text):
+        query = re.sub(r"\s+", " ", re.sub(r"[^\w\s:]|(?<!\d):|:(?!\d)", " ", (text or "").lower())).strip()
+        if not query:
+            return None
+        try:
+            return self.productivity.handle(query)
+        except Exception:
+            logger.exception("Ошибка при разборе фразы: %s", query)
+            return None
 
     # Switch the microphone off or on: while it is off the assistant does not listen for the wake word
     def set_listening(self, enabled):
@@ -271,6 +327,15 @@ class Assistant:
 
     # Process the user's command
     def process_command(self, query):
+        # Timers, alarms, reminders and tasks have keywords of their own, so they are checked first
+        try:
+            answer = self.productivity.handle(query)
+        except Exception:
+            logger.exception("Ошибка в команде дел: %s", query)
+            answer = None
+        if answer:
+            self.tts.speak(answer)
+            return
         best_match, best_score = None, 0
         for cmd in self.commands:
             for trigger in cmd['triggers']:
@@ -300,6 +365,15 @@ class Assistant:
             except Exception as e:
                 self.tts.speak(f"Команда '{query}' пока не реализована.")
                 logger.error("Command execution error: %s", e)
+            return
+        # "Открой калькулятор": a program from the list of applications
+        try:
+            answer = self.productivity.open_app(query)
+        except Exception:
+            logger.exception("Ошибка при запуске приложения: %s", query)
+            answer = None
+        if answer:
+            self.tts.speak(answer)
             return
         response = self.chat_gpt.ask(query)
         self.tts.speak(response)

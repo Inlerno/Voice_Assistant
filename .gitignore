@@ -32,3 +32,6 @@ src/assets/vosk-model-ru-*/
 src/assets/*.zip
 src/assets/*.zip.part
 src/assets/*.unpacking/
+
+# Personal data: timers, tasks and the programs added by the user
+/data/

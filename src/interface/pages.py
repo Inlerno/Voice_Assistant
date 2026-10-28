@@ -1,9 +1,9 @@
-"""The pages Команды, Модель, Журнал and Настройки."""
+"""The pages Команды, Журнал and Настройки (the settings also show the models)."""
 import customtkinter as ctk
 from tkinter import messagebox
 
 from src.interface import theme as t
-from src.interface.widgets import Card, center_content, make_button, page_header
+from src.interface.widgets import Card, center_content, make_button, page_header, scale_of
 
 PAGE_PADDING = 24
 
@@ -53,7 +53,7 @@ class CommandsPage(ctk.CTkFrame):
         label = ctk.CTkLabel(frame, text=phrases, font=(t.FONT, 12), text_color=t.MUTED, anchor="w",
                              justify="left", wraplength=620)
         label.grid(row=1, column=0, sticky="w", padx=18, pady=(2, 12))
-        frame.bind("<Configure>", lambda e, l=label: l.configure(wraplength=max(200, e.width - 170)), add="+")
+        frame.bind("<Configure>", lambda e, l=label: l.configure(wraplength=max(200, int(e.width / scale_of(l)) - 170)), add="+")
         if triggers:
             make_button(
                 frame, "Выполнить", lambda c=command: self.app.run_command(c), "secondary", width=110, height=32,
@@ -76,8 +76,8 @@ class CommandsPage(ctk.CTkFrame):
             self.empty.grid(row=len(self.rows) + 2, column=0, pady=30)
 
 
-class ModelPage(ctk.CTkFrame):
-    """The models that work inside the assistant."""
+class ModelSection(ctk.CTkFrame):
+    """The models that work inside the assistant: a part of the settings page."""
 
     BIG_STATES = {
         "none": ("не установлена", t.OFF, "Скачайте модель командой scripts/download_vosk_model.py — "
@@ -91,11 +91,12 @@ class ModelPage(ctk.CTkFrame):
     def __init__(self, master, app):
         super().__init__(master, fg_color="transparent", corner_radius=0)
         self.app = app
-        body, _ = scrolling_page(self, "Модель", "Какие нейросети работают внутри ассистента")
-        self.small = self._card(body, 1, "Распознавание: слово активации",
+        self.grid_columnconfigure(0, weight=1)
+        body = self
+        self.small = self._card(body, 0, "Распознавание: слово активации",
                                 "Маленькая модель Vosk. Всегда в памяти, быстро реагирует на «Астра».")
-        self.big = self._card(body, 2, "Распознавание: команды", "")
-        self.llm = self._card(body, 3, "Ответы на вопросы",
+        self.big = self._card(body, 1, "Распознавание: команды", "")
+        self.llm = self._card(body, 2, "Ответы на вопросы",
                               "Локальная языковая модель через LM Studio, работает без интернета. "
                               "Нужен запущенный LM Studio с загруженной моделью.")
         self.refresh()
@@ -104,7 +105,7 @@ class ModelPage(ctk.CTkFrame):
         card = Card(parent, title, description)
         card.grid(row=row, column=0, sticky="ew", pady=(0, 14))
         name = card.add_text("", size=14, bold=True, pady=(0, 2))
-        note = card.add_text("", color=t.MUTED, size=12, pady=(0, 16))
+        note = card.add_text("", color=t.MUTED, size=12, pady=(0, 16), collapse=True)
         return name, note
 
     def refresh(self):
@@ -182,12 +183,15 @@ class SettingsPage(ctk.CTkFrame):
         current = getattr(app.assistant, "appearance", "Dark")
         self.mark_appearance(next((k for k, v in t.APPEARANCE_LABELS.items() if v == current), "Тёмная"))
 
+        self.models = ModelSection(body, app)
+        self.models.grid(row=2, column=0, sticky="ew")
+
         about = Card(
             body, "О программе",
             "Распознавание речи работает офлайн (Vosk), ответы на свободные вопросы даёт локальная модель через "
             "LM Studio. Подробный журнал сохраняется в logs/assistant.log.",
         )
-        about.grid(row=2, column=0, sticky="ew", pady=(0, 14))
+        about.grid(row=3, column=0, sticky="ew", pady=(0, 14))
         ctk.CTkFrame(about, height=6, fg_color="transparent").pack()
 
     # The chosen scheme is a filled button, the others are outlined

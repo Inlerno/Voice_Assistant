@@ -3,6 +3,17 @@ import customtkinter as ctk
 
 from src.interface import theme as t
 
+def scale_of(widget):
+    """The scaling of the interface (Windows display scaling: 1.0, 1.25, 1.5 ...).
+
+    customtkinter multiplies sizes and positions given to its widgets by this factor, while winfo_* and the
+    geometry events report real pixels: they have to be divided by the factor before they are passed back."""
+    try:
+        return float(widget._get_widget_scaling())
+    except Exception:
+        return 1.0
+
+
 _BUTTON_STYLES = {
     "primary": dict(fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER, text_color=t.ACCENT_TEXT, border_width=0),
     "secondary": dict(fg_color="transparent", hover_color=t.HOVER, text_color=t.TEXT, border_width=1,
@@ -28,12 +39,42 @@ def make_progress(master, **options):
                               **options)
 
 
+class CollapsingLabel(ctk.CTkLabel):
+    """A label that takes no room while it has no text (an empty label is still a few lines tall)."""
+
+    def __init__(self, master, pack_options, siblings, **options):
+        super().__init__(master, **options)
+        self._pack_options = pack_options
+        # All collapsing labels of the card in their order: they are packed again together to keep it
+        self._siblings = siblings
+        siblings.append(self)
+        self._shown = False
+
+    def configure(self, require_redraw=False, **kwargs):
+        super().configure(require_redraw=require_redraw, **kwargs)
+        if "text" in kwargs:
+            self.sync()
+
+    def sync(self):
+        shown = bool(self.cget("text"))
+        if shown == self._shown:
+            return
+        self._shown = shown
+        # They are the last widgets of the card, so packing them again in order keeps the order
+        for label in self._siblings:
+            label.pack_forget()
+        for label in self._siblings:
+            if label._shown:
+                label.pack(**label._pack_options)
+
+
 class Card(ctk.CTkFrame):
     """A rounded block with a title and a description; its texts re-wrap when the window is resized."""
 
     def __init__(self, master, title, description=""):
         super().__init__(master, corner_radius=18, fg_color=t.SURFACE, border_width=1, border_color=t.BORDER)
         self._wrapped = []
+        self._collapsing = []
         ctk.CTkLabel(self, text=title, font=(t.FONT, 16, "bold"), text_color=t.TEXT, anchor="w").pack(
             fill="x", padx=22, pady=(18, 0)
         )
@@ -44,17 +85,24 @@ class Card(ctk.CTkFrame):
         self.bind("<Configure>", self._rewrap, add="+")
 
     # A label that follows the width of the card
-    def add_text(self, text="", color=t.TEXT, size=13, bold=False, pady=(0, 0)):
-        label = ctk.CTkLabel(
-            self, text=text, font=(t.FONT, size, "bold") if bold else (t.FONT, size), text_color=color,
-            anchor="w", justify="left", wraplength=500,
+    # collapse=True: the label is hidden while it is empty (only for the labels at the end of the card)
+    def add_text(self, text="", color=t.TEXT, size=13, bold=False, pady=(0, 0), collapse=False):
+        options = dict(
+            text=text, font=(t.FONT, size, "bold") if bold else (t.FONT, size), text_color=color,
+            anchor="w", justify="left", wraplength=500, height=0,
         )
-        label.pack(fill="x", padx=22, pady=pady)
+        pack_options = dict(fill="x", padx=22, pady=pady)
+        if collapse:
+            label = CollapsingLabel(self, pack_options, self._collapsing, **options)
+            label.sync()
+        else:
+            label = ctk.CTkLabel(self, **options)
+            label.pack(**pack_options)
         self._wrapped.append(label)
         return label
 
     def _rewrap(self, event):
-        width = max(200, event.width - 48)
+        width = max(200, int(event.width / scale_of(self)) - 48)
         for label in self._wrapped:
             if abs(int(label.cget("wraplength")) - width) > 2:
                 label.configure(wraplength=width)
@@ -98,7 +146,8 @@ def center_content(page, container):
     state = {"side": None}
 
     def update(_event=None):
-        side = max(CONTENT_MARGIN, (page.winfo_width() - CONTENT_MAX_WIDTH) // 2)
+        factor = scale_of(page)
+        side = max(int(CONTENT_MARGIN * factor), (page.winfo_width() - int(CONTENT_MAX_WIDTH * factor)) // 2)
         if side == state["side"]:
             return
         state["side"] = side

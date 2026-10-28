@@ -140,8 +140,8 @@ class VoicePage(ctk.CTkFrame):
         self.meter.pack(side="left", fill="x", expand=True)
         self.test_button = make_button(line, "Проверить", self.toggle_mic_test, width=120)
         self.test_button.pack(side="left", padx=(14, 0))
-        self.verdict = card.add_text("", size=13, bold=True, pady=(6, 0))
-        self.recognized = card.add_text("", color=t.MUTED, size=12, pady=(2, 16))
+        self.verdict = card.add_text("", size=13, bold=True, pady=(6, 0), collapse=True)
+        self.recognized = card.add_text("", color=t.MUTED, size=12, pady=(2, 16), collapse=True)
 
     def toggle_mic_test(self):
         if self.mic_test_running:

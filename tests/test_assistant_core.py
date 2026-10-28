@@ -94,6 +94,87 @@ class TypedCommandTests(unittest.TestCase):
         self.assertEqual(assistant.interface_manager.states[-1], "paused")
 
 
+class FakeSpeaker:
+    def __init__(self):
+        self.said = []
+
+    def speak(self, text):
+        self.said.append(text)
+
+
+class FakeProductivity:
+    def __init__(self, answer=None, app=None):
+        self.answer, self.app, self.seen = answer, app, []
+
+    def handle(self, query):
+        self.seen.append(query)
+        return self.answer
+
+    def open_app(self, query):
+        return self.app
+
+
+def make_command_assistant(answer=None, app=None):
+    assistant = make_assistant()
+    assistant.process_command = Assistant.process_command.__get__(assistant)
+    assistant.commands = []
+    assistant.tts = FakeSpeaker()
+    assistant.productivity = FakeProductivity(answer, app)
+    assistant.chat_gpt = types.SimpleNamespace(ask=lambda q: f"нейросеть: {q}", model_name="test-llm")
+    return assistant
+
+
+class CommandOrderTests(unittest.TestCase):
+    def test_timers_and_tasks_are_answered_first(self):
+        assistant = make_command_assistant(answer="Поставила таймер")
+        assistant.process_command("таймер на пять минут")
+        self.assertEqual(assistant.tts.said, ["Поставила таймер"])
+
+    def test_a_program_is_opened_before_asking_the_model(self):
+        assistant = make_command_assistant(app="Открываю Калькулятор")
+        assistant.process_command("открой калькулятор")
+        self.assertEqual(assistant.tts.said, ["Открываю Калькулятор"])
+
+    def test_everything_else_goes_to_the_language_model(self):
+        assistant = make_command_assistant()
+        assistant.process_command("расскажи анекдот")
+        self.assertEqual(assistant.tts.said, ["нейросеть: расскажи анекдот"])
+
+    def test_a_failure_in_the_planner_does_not_break_the_command(self):
+        assistant = make_command_assistant()
+
+        def boom(_query):
+            raise RuntimeError("fail")
+
+        assistant.productivity.handle = boom
+        assistant.process_command("привет")
+        self.assertEqual(assistant.tts.said, ["нейросеть: привет"])
+
+
+class PlannerNotificationTests(unittest.TestCase):
+    def test_texts_of_fired_items(self):
+        describe = Assistant.describe_fired
+        self.assertEqual(describe({"kind": "timer", "text": "", "length": 300, "due": "2026-10-28T08:00:00"}),
+                         "Таймер на 5 минут сработал.")
+        self.assertEqual(describe({"kind": "timer", "text": "чай", "length": 90, "due": "2026-10-28T08:00:00"}),
+                         "Таймер на 1 минуту 30 секунд сработал: чай.")
+        self.assertEqual(describe({"kind": "alarm", "text": "", "due": "2026-10-28T07:30:00"}),
+                         "Будильник! Уже 07:30.")
+        self.assertEqual(describe({"kind": "reminder", "text": "позвонить маме", "due": "2026-10-28T07:30:00"}),
+                         "Напоминаю: позвонить маме.")
+        self.assertTrue(describe({"kind": "reminder", "text": "х", "missed": True, "due": "x"}).startswith(
+            "Напоминаю, пропущено"))
+
+    def test_the_text_field_keeps_the_colon_of_a_clock_time(self):
+        assistant = make_assistant()
+        assistant.productivity = FakeProductivity(answer="ок")
+        self.assertEqual(assistant.quick_add("Будильник на 7:30, пожалуйста!"), "ок")
+        self.assertEqual(assistant.productivity.seen, ["будильник на 7:30 пожалуйста"])
+        assistant.handle_text("Напомни в 18:00: позвонить")
+        assistant.speech_recognizer.tasks.get_nowait()()
+        self.assertEqual(assistant.processed[-1], "напомни в 18:00 позвонить")
+
+
 class MicrophoneSwitchTests(unittest.TestCase):
     def test_switch(self):
         assistant = make_assistant()
