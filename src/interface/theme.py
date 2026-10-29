@@ -69,6 +69,7 @@ PAGES = (
     ("apps", "Приложения", "grid"),
     ("commands", "Команды", "terminal"),
     ("voice", "Голос", "mic"),
+    ("tts", "Озвучка", "speaker"),
     ("log", "Журнал", "document"),
     ("settings", "Настройки", "sliders"),
 )

@@ -14,6 +14,7 @@ from src.interface.apps_page import AppsPage
 from src.interface.notification import Notification
 from src.interface.pages import CommandsPage, LogPage, SettingsPage, confirm_risky
 from src.interface.planner_page import PlannerPage
+from src.interface.tts_page import TtsPage
 from src.interface.voice_page import VoicePage, device_by_index, short_device_name
 from src.interface.widgets import StatusLight, scale_of
 
@@ -38,7 +39,7 @@ class TkinterLogHandler(logging.Handler):
 
 # The window of 1120x720 does not fit a small laptop screen with the Windows scaling of 125-150%:
 # the size is cut to the screen and the window is put in the middle
-def fit_window(root, width=1120, height=720, min_width=940, min_height=600):
+def fit_window(root, width=1200, height=720, min_width=940, min_height=600):
     try:
         scale = root._get_window_scaling() or 1
     except Exception:
@@ -134,10 +135,10 @@ class VoiceAssistantApp:
         self.tabs_compact = False
         for column, (key, title, icon_name) in enumerate(t.PAGES):
             cell = ctk.CTkFrame(tabs, fg_color="transparent")
-            cell.grid(row=0, column=column, padx=2)
+            cell.grid(row=0, column=column, padx=0)
             button = ctk.CTkButton(
                 cell, text=title, image=g.icon(icon_name, t.MUTED, 18), compound="left", height=38,
-                corner_radius=19, font=(t.FONT, 13), fg_color="transparent", hover_color=t.HOVER,
+                corner_radius=19, font=(t.FONT, 12), fg_color="transparent", hover_color=t.HOVER,
                 text_color=t.MUTED, width=40, command=lambda page=key: self.show_page(page),
             )
             button.pack(padx=2)
@@ -176,6 +177,7 @@ class VoiceAssistantApp:
         self.planner_page = PlannerPage(stack, self)
         self.apps_page = AppsPage(stack, self)
         self.voice_page = VoicePage(stack, self)
+        self.tts_page = TtsPage(stack, self)
         self.log_page = LogPage(stack, self)
         self.settings_page = SettingsPage(stack, self)
         self.pages = {
@@ -184,6 +186,7 @@ class VoiceAssistantApp:
             "apps": self.apps_page,
             "commands": self.commands_page,
             "voice": self.voice_page,
+            "tts": self.tts_page,
             "log": self.log_page,
             "settings": self.settings_page,
         }
@@ -354,6 +357,8 @@ class VoiceAssistantApp:
             self.planner_page.refresh()
         elif kind == "notify":
             self.show_notification(event[1], event[2])
+        elif kind.startswith("tts_"):
+            self.tts_page.handle_event(kind, *event[1:])
         elif kind in ("mic_started", "mic_level", "mic_result", "enroll_progress", "enroll_done"):
             self.voice_page.handle_event(kind, *event[1:])
 

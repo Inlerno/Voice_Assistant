@@ -21,6 +21,7 @@ from src.audio.sound_module import SoundPlayer
 from src.speech.speech_module import SpeechRecognizer
 from src.system.system_control import SystemControl
 from src.speech.tts_module import TTS
+from src.speech import voice_commands
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +333,15 @@ class Assistant:
             answer = self.productivity.handle(query)
         except Exception:
             logger.exception("Ошибка в команде дел: %s", query)
+            answer = None
+        if answer:
+            self.tts.speak(answer)
+            return
+        # The voice of the assistant: "смени голос", "говори голосом Денис", "говори тише"
+        try:
+            answer = voice_commands.handle(self.tts, query)
+        except Exception:
+            logger.exception("Ошибка в команде голоса: %s", query)
             answer = None
         if answer:
             self.tts.speak(answer)
