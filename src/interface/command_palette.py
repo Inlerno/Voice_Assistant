@@ -11,6 +11,7 @@ from rapidfuzz import fuzz
 
 from src.interface import graphics as g
 from src.interface import theme as t
+from src.interface.widgets import scale_of
 
 WIDTH = 600
 MAX_ROWS = 9
@@ -97,7 +98,8 @@ class CommandPalette(ctk.CTkFrame):
         self.found = []
         self.selected = 0
         self.last_query = None
-        self.grid_columnconfigure(0, weight=1)
+        # A frame takes the size of what lies in it, so the width is held by the column (in real pixels)
+        self.grid_columnconfigure(0, weight=1, minsize=int(WIDTH * scale_of(self)))
 
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 6))
