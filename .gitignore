@@ -1,31 +1,20 @@
-/.mypy_cache
+# Environments and tools
 /venv
-assistant.log
-__pycache__/system_control.cpython-313.pyc
-__pycache__/chat_gpt.cpython-313.pyc
-__pycache__/network.cpython-313.pyc
-__pycache__/interface.cpython-313.pyc
-__pycache__/film_service.cpython-313.pyc
-__pycache__/music_service.cpython-313.pyc
-__pycache__/web_driver_manager.cpython-313.pyc
-network/__pycache__/web_driver_manager.cpython-313.pyc
-network/__pycache__/music_service.cpython-313.pyc
-network/__pycache__/network.cpython-313.pyc
-network/__pycache__/film_service.cpython-313.pyc
-network/__pycache__/__init__.cpython-313.pyc
-__pycache__/assistant_core.cpython-313.pyc
-__pycache__/speech_module.cpython-313.pyc
-__pycache__/tts_module.cpython-313.pyc
-__pycache__/sound_module.cpython-313.pyc
-src/integrations/__pycache__/chat_gpt.cpython-313.pyc
-
-# Personal voice profile of the owner: never commit
-src/config/voice_profile.json
-src/config/voice_profile.tmp
+/.venv
+.venv/
+/.mypy_cache
 
 # Python cache
 __pycache__/
 *.pyc
+
+# Log of the assistant
+assistant.log
+/logs/
+
+# Personal voice profile of the owner: never commit
+src/config/voice_profile.json
+src/config/voice_profile.tmp
 
 # Big Vosk models are downloaded by scripts/download_vosk_model.py, they are too large for git
 src/assets/vosk-model-ru-*/
@@ -33,5 +22,5 @@ src/assets/*.zip
 src/assets/*.zip.part
 src/assets/*.unpacking/
 
-# Personal data: timers, tasks and the programs added by the user
+# Personal data: timers, tasks, the programs added by the user, the look, the voices
 /data/
