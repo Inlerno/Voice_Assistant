@@ -1,34 +1,76 @@
-"""Colors, fonts and assistant states of the interface.
+"""Colors, fonts, shapes and assistant states of the interface.
 
-Colors are (light theme, dark theme) pairs, customtkinter picks the right one by itself.
-The look follows the Astra design: warm dark maroon background, soft cream accent, round shapes.
+Colors are (light theme, dark theme) pairs, customtkinter picks the right one by itself. The palette is made from
+the settings of the user by apply(): the accent, how tinted the backgrounds are and how deep the dark theme is.
+The names the pages use (t.BG, t.ACCENT ...) are always read at the moment of drawing, never kept in a constant,
+so a new scheme reaches every widget that is built after apply().
+
+Names of the palette: BG, SURFACE, SURFACE_ALT, BORDER, TEXT, MUTED, HOVER, ACCENT, ACCENT_TEXT, ACCENT_HOVER,
+ACCENT_SOFT (a tinted fill: the open page, a chosen row), ACCENT_VIVID (lines, sliders, focus, the orb),
+BUBBLE_USER, BUBBLE_USER_TEXT, BUBBLE_BOT.
 """
 import logging
 
+from src.interface import palette
+
 # Fonts (Segoe UI is the native Windows font, Tk falls back to another one elsewhere)
-FONT = "Segoe UI"
+DEFAULT_FONT = "Segoe UI"
+FONT = DEFAULT_FONT
 FONT_MONO = "Consolas"
 
-BG = ("#F7F0EE", "#1C1214")
-SURFACE = ("#FFFFFF", "#2A1C1D")
-SURFACE_ALT = ("#F1E6E3", "#34262A")
-BORDER = ("#E6D8D4", "#4A3532")
-TEXT = ("#2B1A1A", "#F6EEEC")
-MUTED = ("#8A7471", "#B39E9A")
-HOVER = ("#F0E3DF", "#34252A")
-ACCENT = ("#7D3B35", "#F1DDD6")
-ACCENT_TEXT = ("#FFFFFF", "#2A1717")
-ACCENT_HOVER = ("#662F2A", "#E3C9C0")
-BUBBLE_USER = ACCENT
-BUBBLE_USER_TEXT = ACCENT_TEXT
-BUBBLE_BOT = ("#EFE3DF", "#2E2022")
+# How round the corners are: 1 is the original look, 0 is square
+RADIUS = 1.0
 
-# Status colors
-OK = ("#1E9E68", "#3DDC97")
-WARN = ("#C98A12", "#F5B63D")
-ERROR = ("#C0392B", "#F2677A")
-OFF = ("#A99793", "#7B6764")
-VIOLET = ("#6D4FD0", "#A58BFF")
+# Status colors: they do not depend on the accent
+OK = palette.STATUS_COLORS["OK"]
+WARN = palette.STATUS_COLORS["WARN"]
+ERROR = palette.STATUS_COLORS["ERROR"]
+OFF = palette.STATUS_COLORS["OFF"]
+VIOLET = palette.STATUS_COLORS["VIOLET"]
+
+# Colors that depend on the palette are filled by apply(); ACCENT_FAMILY is the (hue, chroma) of the accent
+MIC_STATUS_COLORS = {}
+ACCENT_FAMILY = (0.0, 0.0)
+
+
+def r(value, limit=None):
+    """A corner radius made from the one of the original design: it follows the roundness set by the user."""
+    scaled = max(0, round(value * RADIUS))
+    return scaled if limit is None else min(scaled, limit)
+
+
+def pill(height):
+    """The radius of a button or a field of the given height: a full pill, less round when the corners are sharper."""
+    return min(r(height / 2), int(height // 2))
+
+
+def apply(preferences=None):
+    """Makes the palette, the font and the roundness from the settings (without them: the original look)."""
+    global FONT, RADIUS, ACCENT_FAMILY
+    if preferences is None:
+        family = palette.accent_family(palette.DEFAULT_PRESET)
+        scheme = palette.build_scheme(family)
+        FONT, RADIUS = DEFAULT_FONT, 1.0
+    else:
+        family = palette.accent_family(preferences.accent)
+        scheme = preferences.scheme()
+        FONT = preferences.font
+        RADIUS = preferences.radius
+    ACCENT_FAMILY = (family.hue, family.chroma)
+    globals().update(scheme)
+    MIC_STATUS_COLORS.clear()
+    MIC_STATUS_COLORS.update({
+        "ok": OK,
+        "quiet": WARN,
+        "loud": WARN,
+        "silent": ERROR,
+        "error": ERROR,
+        "cancelled": scheme["MUTED"],
+    })
+
+
+apply()
+
 
 # Assistant states: title, hint, dot color, dimmed dot color (for the pulse animation)
 STATES = {
@@ -50,16 +92,6 @@ SERVICE_TITLES = {
     "unknown": "ещё не проверялся",
 }
 
-# Colors of the microphone check verdict
-MIC_STATUS_COLORS = {
-    "ok": OK,
-    "quiet": WARN,
-    "loud": WARN,
-    "silent": ERROR,
-    "error": ERROR,
-    "cancelled": MUTED,
-}
-
 APPEARANCE_LABELS = {"Тёмная": "Dark", "Светлая": "Light", "Системная": "System"}
 
 # Pages of the top navigation: key, title, icon
@@ -72,6 +104,13 @@ PAGES = (
     ("tts", "Озвучка", "speaker"),
     ("log", "Журнал", "document"),
     ("settings", "Настройки", "sliders"),
+)
+
+# How the pages are grouped in the side menu: the last group sits at the bottom of it
+NAV_SECTIONS = (
+    ("home", "planner", "apps", "commands"),
+    ("voice", "tts"),
+    ("log", "settings"),
 )
 
 # Phrases for the page of plans and applications: what to say, what it does

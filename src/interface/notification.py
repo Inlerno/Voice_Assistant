@@ -22,11 +22,11 @@ class Notification(ctk.CTkToplevel):
         self.attributes("-topmost", True)
         self.protocol("WM_DELETE_WINDOW", self.dismiss)
 
-        card = ctk.CTkFrame(self, corner_radius=18, fg_color=t.SURFACE, border_width=1, border_color=t.BORDER)
+        card = ctk.CTkFrame(self, corner_radius=t.r(18), fg_color=t.SURFACE, border_width=1, border_color=t.BORDER)
         card.pack(fill="both", expand=True, padx=8, pady=8)
         head = ctk.CTkFrame(card, fg_color="transparent")
         head.pack(fill="x", padx=18, pady=(14, 4))
-        ctk.CTkLabel(head, text=f"  {KIND_TITLES[item['kind']]}", image=g.icon(KIND_ICONS[item["kind"]], t.ACCENT, 22),
+        ctk.CTkLabel(head, text=f"  {KIND_TITLES[item['kind']]}", image=g.icon(KIND_ICONS[item["kind"]], t.ACCENT_VIVID, 22),
                      compound="left", font=(t.FONT, 16, "bold"), text_color=t.TEXT).pack(side="left")
         ctk.CTkLabel(card, text=message, font=(t.FONT, 14), text_color=t.TEXT, anchor="w", justify="left",
                      wraplength=int(WIDTH - 70)).pack(fill="x", padx=18, pady=(2, 8))

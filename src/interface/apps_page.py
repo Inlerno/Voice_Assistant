@@ -25,7 +25,7 @@ class AppsPage(ctk.CTkFrame):
         make_button(header, "Добавить программу", self.add_app, "primary", width=170, height=36).grid(
             row=0, column=1, rowspan=2, sticky="e")
         self.search = ctk.CTkEntry(
-            body, height=40, corner_radius=20, border_color=t.BORDER, fg_color=t.SURFACE, text_color=t.TEXT,
+            body, height=40, corner_radius=t.pill(40), border_color=t.BORDER, fg_color=t.SURFACE, text_color=t.TEXT,
             placeholder_text="Поиск по программам", placeholder_text_color=t.MUTED, font=(t.FONT, 14),
         )
         self.search.grid(row=1, column=0, sticky="ew", pady=(0, 12))
@@ -65,10 +65,10 @@ class AppsPage(ctk.CTkFrame):
                          text_color=t.MUTED).grid(row=shown, column=0, pady=12)
 
     def _row(self, index, entry):
-        frame = ctk.CTkFrame(self.list, corner_radius=16, fg_color=t.SURFACE, border_width=1, border_color=t.BORDER)
+        frame = ctk.CTkFrame(self.list, corner_radius=t.r(16), fg_color=t.SURFACE, border_width=1, border_color=t.BORDER)
         frame.grid(row=index, column=0, sticky="ew", pady=(0, 8))
         frame.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(frame, text="", image=g.icon("grid", t.ACCENT, 22)).grid(row=0, column=0, rowspan=2, padx=(16, 12),
+        ctk.CTkLabel(frame, text="", image=g.icon("grid", t.ACCENT_VIVID, 22)).grid(row=0, column=0, rowspan=2, padx=(16, 12),
                                                                               pady=12)
         ctk.CTkLabel(frame, text=entry["name"], font=(t.FONT, 14, "bold"), text_color=t.TEXT, anchor="w").grid(
             row=0, column=1, sticky="w", pady=(10, 0))

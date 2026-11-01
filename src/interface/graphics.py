@@ -5,7 +5,7 @@ import customtkinter as ctk
 import numpy as np
 from PIL import Image, ImageDraw
 
-from src.interface import theme
+from src.interface import palette, theme
 
 # Icons are drawn on a 24x24 grid with this supersampling and scaled down, so the lines are smooth
 SUPERSAMPLE = 6
@@ -125,6 +125,19 @@ def _draw_icon(name, size, color, stroke=1.9):
         pen.line([(8, 20.5), (8, 16), (12, 12), (16, 16), (16, 20.5)])
     elif name == "sparkle":
         pen.fill_polygon(_sparkle_points())
+    elif name == "search":
+        pen.arc((4, 4, 16.5, 16.5), 0, 360)
+        pen.line([(14.8, 14.8), (20, 20)])
+    elif name == "sidebar":
+        pen.rounded_rect((3.5, 4.5, 20.5, 19.5), 3.2)
+        pen.line([(9.5, 4.8), (9.5, 19.2)])
+    elif name == "copy":
+        pen.rounded_rect((8.5, 8.5, 19.5, 19.5), 2.4)
+        pen.line([(15.5, 8.5), (15.5, 6.5), (13, 4.5), (6.5, 4.5), (4.5, 6.5), (4.5, 13), (6.5, 15.5), (8.5, 15.5)])
+    elif name == "image":
+        pen.rounded_rect((3.5, 4.5, 20.5, 19.5), 3)
+        pen.line([(4.5, 16.5), (9.5, 11.5), (13.5, 15.5), (16, 13), (19.5, 16.5)])
+        pen.dot((15.5, 8.8), 1.5)
     else:
         raise ValueError(f"Unknown icon: {name}")
     return pen.result(size)
@@ -143,6 +156,33 @@ def icon(name, color, size=20):
     return ctk.CTkImage(light_image=light, dark_image=dark, size=(size, size))
 
 
+@lru_cache(maxsize=None)
+def switch_image(on, on_color, off_light, off_dark, size=(46, 26)):
+    """The picture of a switch for a CTkImage: on_color is a (light, dark) pair, the other two colors are those of
+    the track of a switch that is off. The knob is white with a thin dark outline, so it is seen on a white card."""
+    quality, supersample = 3, 4
+    width, height = size
+
+    def draw(track, outline_alpha):
+        factor = quality * supersample
+        image = Image.new("RGBA", (width * factor, height * factor), (0, 0, 0, 0))
+        pen = ImageDraw.Draw(image)
+        pen.rounded_rectangle((0, 0, width * factor - 1, height * factor - 1), radius=height * factor / 2,
+                              fill=_hex_to_rgb(track) + (255,))
+        pad = 3.0
+        diameter = height - 2 * pad
+        left = (width - pad - diameter) if on else pad
+        box = [left * factor, pad * factor, (left + diameter) * factor, (pad + diameter) * factor]
+        ring = 0.9 * factor
+        pen.ellipse((box[0] - ring, box[1] - ring, box[2] + ring, box[3] + ring), fill=(0, 0, 0, outline_alpha))
+        pen.ellipse(box, fill=(255, 255, 255, 255))
+        return image.resize((width * quality, height * quality), Image.LANCZOS)
+
+    light = draw(on_color[0] if on else off_light, 70)
+    dark = draw(on_color[1] if on else off_dark, 110)
+    return ctk.CTkImage(light_image=light, dark_image=dark, size=size)
+
+
 def sparkle_image(size, color):
     """The sparkle as a plain Pillow image (for the canvas of the home page)."""
     return _draw_icon("sparkle", size, color)
@@ -150,15 +190,18 @@ def sparkle_image(size, color):
 
 # ---------- Background glow of the home page ----------
 
-# Soft blurred blobs: center x, center y, radius x, radius y (parts of the image size), color, strength
+# Soft blurred blobs: center x, center y, radius x, radius y (parts of the image size), strength, and the color
+# as the shift of the hue of the accent, lightness and the share of its chroma (these make the original warm
+# glow of the Bordeaux accent, and the glow of any other accent has the same mood in its own color)
 _GLOW = {
-    False: ((0.50, 0.17, 0.34, 0.17, "#F0C9BB", 0.95),
-            (0.14, 0.28, 0.26, 0.20, "#EBBDB1", 0.80),
-            (0.88, 0.22, 0.28, 0.20, "#F3D6C2", 0.85)),
-    True: ((0.50, 0.17, 0.34, 0.17, "#7A4338", 0.95),
-           (0.14, 0.28, 0.26, 0.20, "#5C2F33", 0.85),
-           (0.88, 0.22, 0.28, 0.20, "#6B3A2E", 0.85)),
+    False: ((0.50, 0.17, 0.34, 0.17, 0.95, (14, 0.866, 0.52)),
+            (0.14, 0.28, 0.26, 0.20, 0.80, (8, 0.836, 0.60)),
+            (0.88, 0.22, 0.28, 0.20, 0.85, (30, 0.895, 0.45))),
+    True: ((0.50, 0.17, 0.34, 0.17, 0.95, (5, 0.447, 0.85)),
+           (0.14, 0.28, 0.26, 0.20, 0.85, (-12, 0.365, 0.71)),
+           (0.88, 0.22, 0.28, 0.20, 0.85, (8, 0.407, 0.78))),
 }
+_GLOW_MAX_CHROMA = {False: 0.075, True: 0.105}
 # The glow lives in the upper part of the page and fades out completely at this share of the height,
 # so the input field below it sits on a flat background
 GLOW_FULL_UNTIL = 0.14
@@ -170,16 +213,31 @@ def _smoothstep(edge0, edge1, x):
     return t * t * (3 - 2 * t)
 
 
-@lru_cache(maxsize=4)
-def glow_image(dark, width=480, height=300):
-    """The background of the home page: a few soft warm blobs on the flat background color."""
-    base = _hex_to_rgb(theme.pick(theme.BG, dark))
+def glow_colors(dark, hue, chroma):
+    """The colors of the blobs of the glow for an accent (its hue and chroma)."""
+    colors = []
+    for *_, (shift, lightness, share) in _GLOW[dark]:
+        colors.append(palette.oklch_to_hex(lightness, min(chroma * share, _GLOW_MAX_CHROMA[dark]), hue + shift))
+    return colors
+
+
+@lru_cache(maxsize=6)
+def glow_image(dark, base, hue, chroma, width=480, height=300):
+    """The background of the home page: a few soft blobs of the accent color on the flat background color;
+    base is the #RRGGBB of the background, hue and chroma are those of the accent."""
+    base_rgb = _hex_to_rgb(base)
     ys, xs = np.mgrid[0:height, 0:width]
     x, y = xs / (width - 1), ys / (height - 1)
     mask = 1.0 - _smoothstep(GLOW_FULL_UNTIL, GLOW_GONE_AT, y)
     out = np.empty((height, width, 3), dtype=np.float64)
-    out[:] = base
-    for cx, cy, rx, ry, color, strength in _GLOW[dark]:
+    out[:] = base_rgb
+    for (cx, cy, rx, ry, strength, _), color in zip(_GLOW[dark], glow_colors(dark, hue, chroma)):
         alpha = np.clip(strength * np.exp(-(((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2) / 2) * mask, 0, 1)
         out = out * (1 - alpha[..., None]) + np.array(_hex_to_rgb(color), dtype=np.float64) * alpha[..., None]
     return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
+
+
+def glow_for_theme(dark):
+    """The glow in the colors of the current palette."""
+    hue, chroma = theme.ACCENT_FAMILY
+    return glow_image(dark, theme.pick(theme.BG, dark), round(hue, 1), round(chroma, 3))

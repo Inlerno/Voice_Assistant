@@ -1,9 +1,9 @@
-"""The pages Команды, Журнал and Настройки (the settings also show the models)."""
+"""The pages Команды and Журнал, and the models section of the settings."""
 import customtkinter as ctk
 from tkinter import messagebox
 
 from src.interface import theme as t
-from src.interface.widgets import Card, center_content, make_button, page_header, scale_of
+from src.interface.widgets import Card, center_content, is_dark, make_button, make_entry, page_header, scale_of
 
 PAGE_PADDING = 24
 
@@ -28,10 +28,7 @@ class CommandsPage(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent", corner_radius=0)
         self.app = app
         body, header = scrolling_page(self, "Команды", "Что умеет ассистент: скажите фразу или запустите кнопкой")
-        self.search = ctk.CTkEntry(
-            header, placeholder_text="Поиск по командам", width=260, height=38, corner_radius=19,
-            border_color=t.BORDER, fg_color=t.SURFACE, text_color=t.TEXT, placeholder_text_color=t.MUTED,
-        )
+        self.search = make_entry(header, "Поиск по командам", height=38, width=260, fg_color=t.SURFACE)
         self.search.grid(row=0, column=1, rowspan=2, sticky="e")
         self.search.bind("<KeyRelease>", lambda _e: self.apply_filter())
         self.body = body
@@ -43,7 +40,7 @@ class CommandsPage(ctk.CTkFrame):
 
     def _build_row(self, grid_row, command):
         triggers = command.get("triggers", [])
-        frame = ctk.CTkFrame(self.body, corner_radius=16, fg_color=t.SURFACE, border_width=1, border_color=t.BORDER)
+        frame = ctk.CTkFrame(self.body, corner_radius=t.r(16), fg_color=t.SURFACE, border_width=1, border_color=t.BORDER)
         frame.grid(row=grid_row, column=0, sticky="ew", pady=(0, 8))
         frame.grid_columnconfigure(0, weight=1)
         title = command.get("say") or command.get("command", "")
@@ -121,7 +118,7 @@ class ModelSection(ctk.CTkFrame):
 
 
 class LogPage(ctk.CTkFrame):
-    def __init__(self, master, app):
+    def __init__(self, master, app, lines=()):
         super().__init__(master, fg_color="transparent", corner_radius=0)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -131,19 +128,29 @@ class LogPage(ctk.CTkFrame):
         make_button(header, "Очистить", self.clear, "secondary", width=110, height=34).grid(
             row=0, column=1, rowspan=2, sticky="e"
         )
-        frame = ctk.CTkFrame(self, corner_radius=18, fg_color=t.SURFACE, border_width=1, border_color=t.BORDER)
+        frame = ctk.CTkFrame(self, corner_radius=t.r(18), fg_color=t.SURFACE, border_width=1, border_color=t.BORDER)
         frame.grid(row=1, column=0, sticky="nsew", padx=PAGE_PADDING, pady=(0, 20))
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(0, weight=1)
         self.box = ctk.CTkTextbox(frame, font=(t.FONT_MONO, 12), fg_color="transparent", text_color=t.TEXT,
-                                  wrap="word", corner_radius=18)
+                                  wrap="word", corner_radius=t.r(18))
         self.box.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
-        self.box.tag_config("time", foreground="#9A8480")
-        self.box.tag_config("warning", foreground="#D97706")
-        self.box.tag_config("error", foreground="#DC2626")
+        # Tags take plain colors (not pairs), so the ones of the theme that is shown are picked here
+        dark = is_dark()
+        self.box.tag_config("time", foreground=t.pick(t.MUTED, dark))
+        self.box.tag_config("warning", foreground=t.pick(t.WARN, dark))
+        self.box.tag_config("error", foreground=t.pick(t.ERROR, dark))
         self.box.configure(state="disabled")
+        self.load(lines)
 
-    def append(self, level, time_text, message):
+    def load(self, lines):
+        """Puts the lines kept by the application into the empty log (the window was built again)."""
+        for level, time_text, message in lines:
+            self._insert(level, time_text, message)
+        self._trim()
+        self._finish()
+
+    def _insert(self, level, time_text, message):
         box = self.box
         box.configure(state="normal")
         box.insert("end", time_text + "  ", "time")
@@ -152,64 +159,26 @@ class LogPage(ctk.CTkFrame):
             box.insert("end", message + "\n", tag)
         else:
             box.insert("end", message + "\n")
+
+    def _trim(self):
         # Do not let the log grow endlessly
-        lines = int(box.index("end-1c").split(".")[0])
+        lines = int(self.box.index("end-1c").split(".")[0])
         if lines > t.LOG_LINES_LIMIT:
-            box.delete("1.0", f"{lines - t.LOG_LINES_LIMIT + 1}.0")
-        box.see("end")
-        box.configure(state="disabled")
+            self.box.delete("1.0", f"{lines - t.LOG_LINES_LIMIT + 1}.0")
+
+    def _finish(self):
+        self.box.see("end")
+        self.box.configure(state="disabled")
+
+    def append(self, level, time_text, message):
+        self._insert(level, time_text, message)
+        self._trim()
+        self._finish()
 
     def clear(self):
         self.box.configure(state="normal")
         self.box.delete("1.0", "end")
         self.box.configure(state="disabled")
-
-
-class SettingsPage(ctk.CTkFrame):
-    def __init__(self, master, app):
-        super().__init__(master, fg_color="transparent", corner_radius=0)
-        self.app = app
-        body, _ = scrolling_page(self, "Настройки", "Оформление и сведения о программе")
-
-        look = Card(body, "Оформление", "Цветовая схема окна.")
-        look.grid(row=1, column=0, sticky="ew", pady=(0, 14))
-        row = ctk.CTkFrame(look, fg_color="transparent")
-        row.pack(anchor="w", padx=22, pady=(0, 18))
-        self.appearance_buttons = {}
-        for column, label in enumerate(t.APPEARANCE_LABELS):
-            button = make_button(row, label, lambda value=label: self.on_appearance(value), "secondary", width=116)
-            button.grid(row=0, column=column, padx=(0, 8))
-            self.appearance_buttons[label] = button
-        current = getattr(app.assistant, "appearance", "Dark")
-        self.mark_appearance(next((k for k, v in t.APPEARANCE_LABELS.items() if v == current), "Тёмная"))
-
-        self.models = ModelSection(body, app)
-        self.models.grid(row=2, column=0, sticky="ew")
-
-        about = Card(
-            body, "О программе",
-            "Распознавание речи работает офлайн (Vosk), ответы на свободные вопросы даёт локальная модель через "
-            "LM Studio. Подробный журнал сохраняется в logs/assistant.log.",
-        )
-        about.grid(row=3, column=0, sticky="ew", pady=(0, 14))
-        ctk.CTkFrame(about, height=6, fg_color="transparent").pack()
-
-    # The chosen scheme is a filled button, the others are outlined
-    def mark_appearance(self, chosen):
-        for label, button in self.appearance_buttons.items():
-            active = label == chosen
-            button.configure(
-                fg_color=t.ACCENT if active else "transparent", text_color=t.ACCENT_TEXT if active else t.TEXT,
-                hover_color=t.ACCENT_HOVER if active else t.HOVER, border_width=0 if active else 1,
-            )
-
-    def on_appearance(self, label):
-        self.mark_appearance(label)
-        mode = t.APPEARANCE_LABELS.get(label, "Dark")
-        ctk.set_appearance_mode(mode)
-        if hasattr(self.app.assistant, "set_appearance"):
-            self.app.assistant.set_appearance(mode)
-        self.app.on_appearance_changed()
 
 
 def confirm_risky(parent, command):

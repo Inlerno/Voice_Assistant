@@ -82,8 +82,9 @@ class VoicePage(ctk.CTkFrame):
         self.device_options = input_devices()
         self.device_box = ctk.CTkComboBox(
             line, values=self.device_options, font=(t.FONT, 13), dropdown_font=(t.FONT, 13), height=38,
-            corner_radius=19, border_color=t.BORDER, fg_color=t.SURFACE_ALT, button_color=t.ACCENT,
-            button_hover_color=t.ACCENT_HOVER, text_color=t.TEXT, command=self.on_device_selected,
+            corner_radius=t.pill(38), border_color=t.BORDER, fg_color=t.SURFACE_ALT, button_color=t.SURFACE_ALT,
+            button_hover_color=t.HOVER, text_color=t.TEXT, dropdown_fg_color=t.SURFACE, dropdown_text_color=t.TEXT,
+            dropdown_hover_color=t.ACCENT_SOFT, command=self.on_device_selected,
         )
         saved = device_by_index(getattr(self.assistant, "input_device", None))
         self.device_box.set(saved or default_device())
@@ -224,8 +225,8 @@ class VoicePage(ctk.CTkFrame):
         row_line.pack(fill="x", padx=22, pady=(0, 4))
         ctk.CTkLabel(row_line, text="Строже", font=(t.FONT, 12), text_color=t.MUTED).pack(side="left")
         self.slider = ctk.CTkSlider(
-            row_line, from_=SENSITIVITY_MIN, to=SENSITIVITY_MAX, number_of_steps=16, progress_color=t.ACCENT,
-            button_color=t.ACCENT, button_hover_color=t.ACCENT_HOVER, fg_color=t.BORDER,
+            row_line, from_=SENSITIVITY_MIN, to=SENSITIVITY_MAX, number_of_steps=16, progress_color=t.ACCENT_VIVID,
+            button_color=t.ACCENT_VIVID, button_hover_color=t.ACCENT_VIVID, fg_color=t.BORDER,
             command=self.on_sensitivity_changed,
         )
         self.slider.pack(side="left", fill="x", expand=True, padx=12)

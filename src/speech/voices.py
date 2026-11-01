@@ -17,7 +17,7 @@ import shutil
 import tarfile
 import tempfile
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests

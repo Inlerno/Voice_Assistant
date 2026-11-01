@@ -6,7 +6,7 @@ import customtkinter as ctk
 from src.interface import graphics as g
 from src.interface import theme as t
 from src.interface.pages import scrolling_page
-from src.interface.widgets import Card, make_button
+from src.interface.widgets import Card, make_button, spacer
 from src.productivity import ru_parse
 from src.productivity.planner import ALARM, REMINDER, TIME_FORMAT, TIMER, seconds_left
 
@@ -50,7 +50,7 @@ class PlannerPage(ctk.CTkFrame):
         self._build_tasks(body, 3)
         self._build_examples(body, 4)
         self.refresh()
-        self.after(1000, self._tick)
+        self._tick_job = self.after(1000, self._tick)
 
     # ---------- Quick add ----------
 
@@ -61,7 +61,7 @@ class PlannerPage(ctk.CTkFrame):
         line.pack(fill="x", padx=22, pady=(0, 10))
         line.grid_columnconfigure(0, weight=1)
         self.quick = ctk.CTkEntry(
-            line, height=40, corner_radius=20, border_color=t.BORDER, fg_color=t.SURFACE_ALT, text_color=t.TEXT,
+            line, height=40, corner_radius=t.pill(40), border_color=t.BORDER, fg_color=t.SURFACE_ALT, text_color=t.TEXT,
             placeholder_text="Напомни в 18:00 позвонить маме", placeholder_text_color=t.MUTED, font=(t.FONT, 14),
         )
         self.quick.grid(row=0, column=0, sticky="ew", padx=(0, 10))
@@ -113,7 +113,7 @@ class PlannerPage(ctk.CTkFrame):
             subtitle = ru_parse.describe_moment(due)
         if item.get("repeat"):
             subtitle += " · " + ("каждый день" if item["repeat"] == "daily" else "по будням")
-        ctk.CTkLabel(self.events_box, text="", image=g.icon(KIND_ICONS[item["kind"]], t.ACCENT, 22)).grid(
+        ctk.CTkLabel(self.events_box, text="", image=g.icon(KIND_ICONS[item["kind"]], t.ACCENT_VIVID, 22)).grid(
             row=index, column=0, padx=(10, 12), pady=8)
         texts = ctk.CTkFrame(self.events_box, fg_color="transparent")
         texts.grid(row=index, column=1, sticky="w")
@@ -126,13 +126,23 @@ class PlannerPage(ctk.CTkFrame):
         left.grid(row=index, column=2, padx=(10, 6), sticky="e")
         self.countdowns[item["id"]] = (left, item)
         ctk.CTkButton(
-            self.events_box, text="", image=g.icon("close", t.MUTED, 16), width=32, height=32, corner_radius=16,
+            self.events_box, text="", image=g.icon("close", t.MUTED, 16), width=32, height=32, corner_radius=t.pill(32),
             fg_color="transparent", hover_color=t.HOVER, command=lambda i=item["id"]: self.planner.remove(i),
         ).grid(row=index, column=3, padx=(0, 8))
 
     def _tick(self):
         self._tick_once()
-        self.after(1000, self._tick)
+        self._tick_job = self.after(1000, self._tick)
+
+    def destroy(self):
+        # The countdown must not go on for a page that is gone (the window is built again when the look changes)
+        if self._tick_job is not None:
+            try:
+                self.after_cancel(self._tick_job)
+            except Exception:
+                pass
+            self._tick_job = None
+        super().destroy()
 
     # ---------- Tasks ----------
 
@@ -143,7 +153,7 @@ class PlannerPage(ctk.CTkFrame):
         line.pack(fill="x", padx=22, pady=(0, 8))
         line.grid_columnconfigure(0, weight=1)
         self.task_entry = ctk.CTkEntry(
-            line, height=40, corner_radius=20, border_color=t.BORDER, fg_color=t.SURFACE_ALT, text_color=t.TEXT,
+            line, height=40, corner_radius=t.pill(40), border_color=t.BORDER, fg_color=t.SURFACE_ALT, text_color=t.TEXT,
             placeholder_text="Новая задача", placeholder_text_color=t.MUTED, font=(t.FONT, 14),
         )
         self.task_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
@@ -154,8 +164,8 @@ class PlannerPage(ctk.CTkFrame):
         self.tasks_box.grid_columnconfigure(0, weight=1)
         self.clear_done_button = make_button(card, "Убрать выполненные", self.planner.clear_done, "secondary",
                                              width=190, height=32, font_size=12)
-        self.tasks_footer = ctk.CTkFrame(card, height=10, fg_color="transparent")
-        self.tasks_footer.pack()
+        self.tasks_footer = ctk.CTkFrame(card, width=1, height=10, fg_color="transparent")
+        self.tasks_footer.pack(pady=(0, 3))
 
     def add_task(self):
         text = self.task_entry.get().strip()
@@ -169,13 +179,13 @@ class PlannerPage(ctk.CTkFrame):
             self.tasks_box, text=limited(f"{number}. {task['text']}" if number else task["text"]), width=20,
             font=ctk.CTkFont(family=t.FONT, size=14, overstrike=done), text_color=t.MUTED if done else t.TEXT,
             fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER, border_color=t.MUTED, checkmark_color=t.ACCENT_TEXT,
-            corner_radius=7, command=lambda i=task["id"], d=done: self.planner.set_done(i, not d),
+            corner_radius=t.r(7), command=lambda i=task["id"], d=done: self.planner.set_done(i, not d),
         )
         if done:
             check.select()
         check.grid(row=index, column=0, sticky="w", padx=(12, 0), pady=7)
         ctk.CTkButton(
-            self.tasks_box, text="", image=g.icon("close", t.MUTED, 16), width=32, height=32, corner_radius=16,
+            self.tasks_box, text="", image=g.icon("close", t.MUTED, 16), width=32, height=32, corner_radius=t.pill(32),
             fg_color="transparent", hover_color=t.HOVER, command=lambda i=task["id"]: self.planner.remove_task(i),
         ).grid(row=index, column=1, padx=(0, 8))
 
@@ -187,7 +197,7 @@ class PlannerPage(ctk.CTkFrame):
         for phrase, note in t.PLANNER_EXAMPLES:
             card.add_text(f"«{phrase}»", size=13, bold=True, pady=(4, 0))
             card.add_text(note, color=t.MUTED, size=12, pady=(0, 2))
-        ctk.CTkFrame(card, height=12, fg_color="transparent").pack()
+        spacer(card, 12)
 
     # ---------- Redraw ----------
 

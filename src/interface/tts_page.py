@@ -22,13 +22,14 @@ HELP_TEXT = (
 
 
 class TtsPage(ctk.CTkFrame):
-    def __init__(self, master, app):
+    def __init__(self, master, app, cancel_events=None):
         super().__init__(master, fg_color="transparent", corner_radius=0)
         self.app = app
         self.tts = app.assistant.tts
         self.library = self.tts.library
         self.busy = {}           # voice id -> its progress bar while it is being downloaded
-        self.cancel_events = {}
+        # Downloads that are going on: they continue when the window is built again, the page just shows them
+        self.cancel_events = cancel_events if cancel_events is not None else {}
         self._commit_job = None
         body, _ = scrolling_page(self, "Озвучка", "Каким голосом говорит ассистент")
 
@@ -62,7 +63,7 @@ class TtsPage(ctk.CTkFrame):
         test.pack(fill="x", padx=22, pady=(4, 18))
         test.grid_columnconfigure(0, weight=1)
         self.test_entry = ctk.CTkEntry(
-            test, height=38, corner_radius=19, border_color=t.BORDER, fg_color=t.SURFACE_ALT, text_color=t.TEXT,
+            test, height=38, corner_radius=t.pill(38), border_color=t.BORDER, fg_color=t.SURFACE_ALT, text_color=t.TEXT,
             placeholder_text="Напишите фразу, чтобы услышать её выбранным голосом", placeholder_text_color=t.MUTED,
             font=(t.FONT, 13),
         )
@@ -75,7 +76,7 @@ class TtsPage(ctk.CTkFrame):
             row=row, column=0, sticky="w", pady=6)
         slider = ctk.CTkSlider(
             grid, from_=bounds[0], to=bounds[1], number_of_steps=int(round((bounds[1] - bounds[0]) / 0.05)),
-            progress_color=t.ACCENT, button_color=t.ACCENT, button_hover_color=t.ACCENT_HOVER, fg_color=t.BORDER,
+            progress_color=t.ACCENT_VIVID, button_color=t.ACCENT_VIVID, button_hover_color=t.ACCENT_VIVID, fg_color=t.BORDER,
             command=command,
         )
         slider.set(value)
@@ -136,11 +137,11 @@ class TtsPage(ctk.CTkFrame):
         self._refresh_catalog()
 
     def _voice_row(self, index, voice, selected):
-        frame = ctk.CTkFrame(self.voices_box, corner_radius=16, fg_color=t.SURFACE_ALT,
-                             border_width=2 if selected else 1, border_color=t.ACCENT if selected else t.BORDER)
+        frame = ctk.CTkFrame(self.voices_box, corner_radius=t.r(16), fg_color=t.SURFACE_ALT,
+                             border_width=2 if selected else 1, border_color=t.ACCENT_VIVID if selected else t.BORDER)
         frame.grid(row=index, column=0, sticky="ew", pady=(0, 8))
         frame.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(frame, text="", image=g.icon("check" if selected else "speaker", t.ACCENT if selected else
+        ctk.CTkLabel(frame, text="", image=g.icon("check" if selected else "speaker", t.ACCENT_VIVID if selected else
                                                   t.MUTED, 22)).grid(row=0, column=0, rowspan=2, padx=(16, 12), pady=12)
         source = SOURCE_TITLES.get(voice.source, "")
         ctk.CTkLabel(frame, text=voice.name, font=(t.FONT, 14, "bold"), text_color=t.TEXT, anchor="w").grid(
@@ -167,7 +168,7 @@ class TtsPage(ctk.CTkFrame):
             child.destroy()
         for index, entry in enumerate(CATALOG):
             installed = self.library.is_installed(entry.id)
-            frame = ctk.CTkFrame(self.catalog_box, corner_radius=16, fg_color=t.SURFACE_ALT, border_width=1,
+            frame = ctk.CTkFrame(self.catalog_box, corner_radius=t.r(16), fg_color=t.SURFACE_ALT, border_width=1,
                                  border_color=t.BORDER)
             frame.grid(row=index, column=0, sticky="ew", pady=(0, 8))
             frame.grid_columnconfigure(1, weight=1)
