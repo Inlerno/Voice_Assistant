@@ -422,7 +422,11 @@ class HomePage(ctk.CTkFrame):
         self.hero_mode = True
         self.canvas.refresh_greeting()
         self.canvas.place(x=0, y=0, relwidth=1, relheight=1)
-        tk.Misc.lower(self.canvas)      # the canvas has its own lower(), for the items on it
+        # Just above the canvas that paints the frame itself (under it the picture would be hidden by the frame's
+        # own color) and under everything else; the canvas has its own lift(), for the items on it
+        background = getattr(self, "_canvas", None)
+        if background is not None:
+            tk.Misc.lift(self.canvas, background)
         self.canvas.set_shown(self.app.current_page == "home")
         self.layout()
 

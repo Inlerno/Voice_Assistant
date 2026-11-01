@@ -7,6 +7,7 @@ import pathlib
 import sys
 import tempfile
 import time
+import tkinter
 import traceback
 import types
 import unittest
@@ -191,6 +192,21 @@ class WindowTests(unittest.TestCase):
         self.app.new_dialog()
         self.pump(100)
         self.change(accent="bordo")
+
+    def test_07b_the_welcome_screen_comes_back_after_a_new_dialog(self):
+        home = self.app.home
+        self.app.add_message("user", "привет")
+        self.pump(100)
+        self.assertFalse(home.hero_mode)
+        self.app.new_dialog()
+        self.pump(200)
+        self.assertTrue(home.hero_mode)
+        self.assertTrue(home.canvas.winfo_ismapped())
+        # The children go from the lowest window to the highest: the picture and the orb must not be hidden behind
+        # the canvas that paints the frame of the page
+        order = tkinter.Misc.winfo_children(home)      # (customtkinter's own version leaves the frame's canvas out)
+        self.assertGreater(order.index(home.canvas), order.index(home._canvas))
+        self.assertGreater(order.index(home.bar), order.index(home.canvas))
 
     def test_08_the_quick_search_opens_finds_and_closes(self):
         self.app.show_page("home")
