@@ -29,6 +29,7 @@ from src.interface.pages import CommandsPage, LogPage, confirm_risky
 from src.interface.planner_page import PlannerPage
 from src.interface.preferences import Preferences
 from src.interface.settings_page import SettingsPage
+from src.interface.telegram_page import TelegramPage
 from src.interface.tts_page import TtsPage
 from src.interface.voice_page import VoicePage, device_by_index, short_device_name
 from src.interface.widgets import Toast, is_dark
@@ -56,6 +57,7 @@ PAGE_KEYWORDS = {
     "commands": "фразы что умеешь",
     "voice": "микрофон профиль голос владельца распознавание",
     "tts": "озвучка речь tts синтез голоса скорость громкость",
+    "telegram": "телеграм telegram бот чат голосовые сообщения токен привязать аккаунт прокси",
     "log": "журнал логи ошибки",
     "settings": "оформление цвет тема шрифт размер масштаб обои",
 }
@@ -225,6 +227,14 @@ class VoiceAssistantApp:
     def notify(self, item, message):
         self.events.put(("notify", item, message))
 
+    # The Telegram bot has a new state, a new account or a new code (called from any thread)
+    def telegram_changed(self):
+        self.events.put(("telegram",))
+
+    # Something the owner should see at once, for example a new account that wrote to the bot (any thread)
+    def notice(self, text):
+        self.events.put(("notice", text))
+
     # ---------- Window construction ----------
 
     def scale_limit(self):
@@ -312,7 +322,7 @@ class VoiceAssistantApp:
             # A voice that is being downloaded keeps downloading when the window is built again
             return TtsPage(stack, self, cancel_events=self.tts_downloads)
         pages = {"planner": PlannerPage, "apps": AppsPage, "commands": CommandsPage, "voice": VoicePage,
-                 "settings": SettingsPage}
+                 "telegram": TelegramPage, "settings": SettingsPage}
         return pages[name](stack, self)
 
     # ---------- Changing the look ----------
@@ -692,6 +702,17 @@ class VoiceAssistantApp:
                 self.pages["planner"].refresh()
         elif kind == "notify":
             self.show_notification(event[1], event[2])
+        elif kind == "telegram":
+            if "telegram" in self.pages:
+                self.pages["telegram"].refresh()
+        elif kind == "telegram_checked":
+            # The answer to a check of a token started on the page: if the window was built again meanwhile, the
+            # page is made again and takes the answer, so the person does not have to start over
+            self.page("telegram").handle_event(kind, *event[1:])
+        elif kind == "notice":
+            self.history.append(("system", event[1], None, datetime.now()))
+            self.home.add_message("system", event[1], None, self.history[-1][3])
+            self.toast.show(event[1], "info", 5000)
         elif kind.startswith("tts_"):
             self._handle_tts_event(kind, event[1:])
         elif kind in ("mic_started", "mic_level", "mic_result", "enroll_progress", "enroll_done"):

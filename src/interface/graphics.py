@@ -91,6 +91,10 @@ def _draw_icon(name, size, color, stroke=1.9):
     elif name == "send":
         pen.line([(12, 19), (12, 5.5)])
         pen.line([(6.5, 11), (12, 5.5), (17.5, 11)])
+    elif name == "plane":
+        # a paper plane: the sign of a chat messenger
+        pen.polygon([(21, 3.5), (3.5, 10.5), (10.5, 13.5), (13.5, 20.5)])
+        pen.line([(10.5, 13.5), (21, 3.5)])
     elif name == "plus":
         pen.line([(12, 5), (12, 19)])
         pen.line([(5, 12), (19, 12)])

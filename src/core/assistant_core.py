@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import re
 import threading
 import time
 from pathlib import Path
@@ -10,7 +9,10 @@ import pygame
 import sounddevice as sd
 from rapidfuzz import fuzz
 
+from src.core.remote import RemoteHost, normalize_query, show_bot_in_window
 from src.integrations.chat_gpt import ChatGPT
+from src.integrations.telegram.bot import TelegramBot
+from src.integrations.telegram.settings import TelegramSettings
 from src.interface.interface import VoiceAssistantApp
 from src.network import NetworkActions
 from src.productivity.apps import AppLauncher
@@ -47,6 +49,9 @@ class Assistant:
         self.planner = Planner(on_fire=self.on_planner_fire, on_change=self._planner_changed)
         self.apps = AppLauncher()
         self.productivity = Productivity(self.planner, self.apps)
+        # Orders from a Telegram chat (text and voice): the bot starts when the window is connected, if it is switched on
+        self.telegram_settings = TelegramSettings()
+        self.telegram = TelegramBot(self.telegram_settings, RemoteHost(self))
 
         self.sound_player.play_sound('start')
         self.session_timeout = 15
@@ -94,6 +99,7 @@ class Assistant:
         self.speech_recognizer.on_model = lambda text: (ui.add_message("system", text), ui.refresh_models())
         ui.set_service("stt", "ok")
         ui.set_service("tts", "ok")
+        self.connect_telegram()
         # The big model (if it was downloaded) loads in the background while the assistant already works
         self.speech_recognizer.start_big_model_loading()
 
@@ -102,7 +108,7 @@ class Assistant:
     def handle_text(self, text):
         original = (text or "").strip()
         # Spoken commands arrive in lower case without punctuation, so the typed ones are brought to the same form
-        query = re.sub(r"\s+", " ", re.sub(r"[^\w\s:]|(?<!\d):|:(?!\d)", " ", original.lower())).strip()
+        query = normalize_query(original)
         if not query:
             return None
         ui = self.interface_manager
@@ -119,6 +125,50 @@ class Assistant:
         finally:
             self.interface_manager.set_state("paused" if self.speech_recognizer.paused else "idle")
 
+    # A command that came from a chat (Telegram). Like a typed one it runs on the assistant thread when the microphone
+    # is free. What the assistant says goes to io.say() (not to the speakers, unless io.speak_aloud), what it asks
+    # (a city, a song) goes to io.ask() and is answered in the chat. io.label names the author for the dialog.
+    # Returns a Future, or None for an empty text.
+    def handle_remote(self, text, io, note=None):
+        original = (text or "").strip()
+        query = normalize_query(original)
+        if not query:
+            return None
+        ui = self.interface_manager
+        ui.add_message("user", original, io.label + (f" · {note}" if note else ""))
+        ui.set_state("processing")
+        self._answer_started = time.perf_counter()
+        return self.speech_recognizer.run_exclusive(lambda: self._run_remote(query, io))
+
+    def _run_remote(self, query, io):
+        ui = self.interface_manager
+
+        # The question of a command goes to the chat, the next message of the person is the answer
+        def answer():
+            ui.set_state("listening")
+            reply = io.ask()
+            ui.set_state("processing")
+            if not reply:
+                return None
+            ui.add_message("user", reply, io.label)
+            return normalize_query(reply) or None
+
+        try:
+            with self.tts.capture(io), self.speech_recognizer.command_from(answer):
+                self.process_command(query)
+        except Exception:
+            logger.exception("Ошибка при обработке команды из чата: %s", query)
+            io.say("Не получилось выполнить команду. Подробности в журнале на компьютере.")
+        finally:
+            ui.set_state("paused" if self.speech_recognizer.paused else "idle")
+
+    # The bot of Telegram shows its state in the window and tells the owner about new accounts; it starts if the owner
+    # has switched it on
+    def connect_telegram(self):
+        show_bot_in_window(self.telegram, self.interface_manager)
+        if self.telegram_settings.ready:
+            self.telegram.start()
+
     # ---------- Timers, alarms, reminders ----------
 
     def _planner_changed(self):
@@ -131,6 +181,13 @@ class Assistant:
         message = self.describe_fired(item)
         logger.info("Сработало: %s", message)
         self.interface_manager.notify(item, message)
+        # The person who set it from a chat is probably not at the computer: the chat is told too
+        bot = getattr(self, "telegram", None)
+        if bot is not None and self.telegram_settings.notify_planner:
+            try:
+                bot.broadcast("⏰ " + message)
+            except Exception:
+                logger.exception("Не удалось отправить напоминание в Telegram")
 
         def announce():
             try:
@@ -157,7 +214,7 @@ class Assistant:
 
     # What the "Планы" page does with a phrase typed into its field: the same commands as by voice
     def quick_add(self, text):
-        query = re.sub(r"\s+", " ", re.sub(r"[^\w\s:]|(?<!\d):|:(?!\d)", " ", (text or "").lower())).strip()
+        query = normalize_query(text)
         if not query:
             return None
         try:
@@ -326,6 +383,16 @@ class Assistant:
     def search_online(self):
         self.network_actions.web_search_service.search_online(self.tts, self.speech_recognizer)
 
+    # The command of commands.json that the phrase is closest to, or None
+    def match_command(self, query):
+        best_match, best_score = None, 0
+        for cmd in self.commands:
+            for trigger in cmd['triggers']:
+                score = fuzz.ratio(query, trigger)
+                if score > best_score:
+                    best_match, best_score = cmd, score
+        return best_match if best_score > 75 else None
+
     # Process the user's command
     def process_command(self, query):
         # Timers, alarms, reminders and tasks have keywords of their own, so they are checked first
@@ -346,13 +413,8 @@ class Assistant:
         if answer:
             self.tts.speak(answer)
             return
-        best_match, best_score = None, 0
-        for cmd in self.commands:
-            for trigger in cmd['triggers']:
-                score = fuzz.ratio(query, trigger)
-                if score > best_score:
-                    best_match, best_score = cmd, score
-        if best_match and best_score > 75:
+        best_match = self.match_command(query)
+        if best_match:
             try:
                 handler_map = {
                     "self": self,

@@ -11,6 +11,7 @@ BUBBLE_USER, BUBBLE_USER_TEXT, BUBBLE_BOT.
 """
 import logging
 
+from src.core import risky
 from src.interface import palette
 
 # Fonts (Segoe UI is the native Windows font, Tk falls back to another one elsewhere)
@@ -81,8 +82,9 @@ STATES = {
     "paused": ("Микрофон выключен", "Включите микрофон, чтобы продолжить", ERROR, ERROR),
 }
 
-# Services shown in the status bar: AI (language model), STT (speech recognition), TTS (speech synthesis)
-SERVICES = (("ai", "AI"), ("stt", "STT"), ("tts", "TTS"))
+# Services shown in the status bar: AI (language model), STT (speech recognition), TTS (speech synthesis),
+# TG (the Telegram bot: orders from a chat)
+SERVICES = (("ai", "AI"), ("stt", "STT"), ("tts", "TTS"), ("tg", "TG"))
 SERVICE_COLORS = {"ok": OK, "busy": WARN, "error": ERROR, "off": OFF, "unknown": OFF}
 SERVICE_TITLES = {
     "ok": "работает",
@@ -102,6 +104,7 @@ PAGES = (
     ("commands", "Команды", "terminal"),
     ("voice", "Голос", "mic"),
     ("tts", "Озвучка", "speaker"),
+    ("telegram", "Telegram", "plane"),
     ("log", "Журнал", "document"),
     ("settings", "Настройки", "sliders"),
 )
@@ -109,7 +112,7 @@ PAGES = (
 # How the pages are grouped in the side menu: the last group sits at the bottom of it
 NAV_SECTIONS = (
     ("home", "planner", "apps", "commands"),
-    ("voice", "tts"),
+    ("voice", "tts", "telegram"),
     ("log", "settings"),
 )
 
@@ -128,13 +131,8 @@ LOG_LINES_LIMIT = 500
 LOG_LEVEL_TAGS = {logging.WARNING: "warning", logging.ERROR: "error", logging.CRITICAL: "error"}
 
 # Commands that change the state of the computer: they are started from the interface only after a confirmation
-RISKY_COMMANDS = {
-    "shutdown": "выключит компьютер",
-    "restart": "перезагрузит компьютер",
-    "sleep": "переведёт компьютер в спящий режим",
-    "empty": "очистит корзину",
-    "finish": "завершит работу ассистента",
-}
+# (the list is shared with the Telegram bot, so it lives in the core)
+RISKY_COMMANDS = risky.RISKY_COMMANDS
 
 
 def pick(color, dark):

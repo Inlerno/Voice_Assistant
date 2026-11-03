@@ -9,6 +9,11 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+# numpy cannot be imported twice in one process, and everything that is imported for the first time while the
+# stubs below are in place is forgotten when they go away. The core brings numpy in (the decoding of voice messages),
+# so it is imported before, once and for all tests
+import numpy  # noqa: E402,F401
+
 # The heavy dependencies (audio, speech, interface) are not needed to test the logic of the core. They are replaced
 # only while the module is imported, so the other test files keep working with the real libraries
 _STUBBED = ("pygame", "sounddevice", "rapidfuzz", "lmstudio", "pyttsx3", "src.interface.interface", "src.network",

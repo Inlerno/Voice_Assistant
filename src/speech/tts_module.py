@@ -2,6 +2,7 @@ import logging
 import queue
 import re
 import threading
+from contextlib import contextmanager
 
 from src.speech.voices import NEURAL, SYSTEM, SYSTEM_PREFIX, TtsSettings, Voice, VoiceError, VoiceLibrary
 
@@ -192,6 +193,8 @@ class TTS:
         self.on_speak = None
         # Optional callback for the interface: on_status("busy"|"ok"|"error"), the state of the speech synthesis
         self.on_status = None
+        # Where the phrases of the thread that works for a chat go instead of the speakers (see capture)
+        self._capture = threading.local()
         self._jobs = queue.Queue()
         self._ready = threading.Event()
         self._speaking = threading.Event()
@@ -265,6 +268,18 @@ class TTS:
             except Exception:
                 logger.exception("on_status callback error")
 
+    @contextmanager
+    def capture(self, sink):
+        """While the block runs, what THIS thread says also goes to sink.say(text), and it is not said aloud unless
+        sink.speak_aloud is true. It is how a command that was ordered from a chat answers to the chat. Phrases of
+        other threads (the planner, the interface) are not touched."""
+        previous = getattr(self._capture, "sink", None)
+        self._capture.sink = sink
+        try:
+            yield
+        finally:
+            self._capture.sink = previous
+
     def speak(self, message):
         """Says the text and returns when it has been said (or interrupted)."""
         message_str = str(message)
@@ -274,6 +289,14 @@ class TTS:
                 self.on_speak(message_str)
             except Exception:
                 logger.exception("on_speak callback error")
+        sink = getattr(self._capture, "sink", None)
+        if sink is not None:
+            try:
+                sink.say(message_str)
+            except Exception:
+                logger.exception("Ответ в чат не отправлен")
+            if not getattr(sink, "speak_aloud", False):
+                return
         text = clean_text(message_str)
         if not text:
             return

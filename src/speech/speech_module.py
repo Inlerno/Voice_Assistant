@@ -5,6 +5,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import Future
+from contextlib import contextmanager
 from pathlib import Path
 
 import sounddevice as sd
@@ -101,6 +102,8 @@ class SpeechRecognizer:
         self.on_model = None
         # Jobs that need the microphone to themselves, they run on the assistant thread
         self._tasks = queue.Queue()
+        # The source of phrases of the thread that works for another device (see command_from)
+        self._remote = threading.local()
 
     def _notify(self, callback, *args):
         if callback:
@@ -383,6 +386,39 @@ class SpeechRecognizer:
         return {"ok": True, "recorded": recorded, "threshold": self.profile.threshold,
                 "message": f"Готово: записано образцов {recorded}. Ассистент будет реагировать на ваш голос."}
 
+    # ---------- Recordings and phrases from other devices ----------
+
+    # Recognize a recording (16-bit mono PCM, for example a voice message from a chat) with the model that
+    # recognizes commands. The microphone is not touched, so it works on any thread while the assistant listens
+    # (a Vosk model may be shared, every call has a recognizer of its own).
+    # Returns (text in lower case, {"decode_ms": ..., "audio_s": ...}); the text is empty when there was no speech.
+    def transcribe(self, pcm: bytes, rate: int = 16000):
+        recognizer = vosk.KaldiRecognizer(self.command_model, rate)
+        started = time.perf_counter()
+        parts = []
+        step = rate * 2  # one second of 16-bit audio per call
+        for offset in range(0, len(pcm), step):
+            if recognizer.AcceptWaveform(pcm[offset:offset + step]):
+                parts.append(json.loads(recognizer.Result()).get("text", ""))
+        parts.append(json.loads(recognizer.FinalResult()).get("text", ""))
+        text = " ".join(part.strip() for part in parts if part.strip()).lower()
+        stats = {"decode_ms": (time.perf_counter() - started) * 1000.0, "audio_s": len(pcm) / 2 / rate}
+        logger.info("Распознана запись: %s (Vosk %.0f мс, запись %.1f с)", text or "<тишина>",
+                    stats["decode_ms"], stats["audio_s"])
+        return text, stats
+
+    # While the block runs, listen_command() on this thread does not use the microphone: it asks source() for the
+    # next phrase of the person who is far away (a Telegram chat) and returns what it gives (a text or None).
+    # Other threads are not affected, the assistant keeps listening to the microphone the usual way.
+    @contextmanager
+    def command_from(self, source):
+        previous = getattr(self._remote, "source", None)
+        self._remote.source = source
+        try:
+            yield
+        finally:
+            self._remote.source = previous
+
     # ---------- Commands ----------
 
     # Recognize a voice command.
@@ -391,6 +427,9 @@ class SpeechRecognizer:
     #   max_duration      - hard limit for the whole recording, in seconds
     #   no_speech_timeout - give up if nothing was said within this time, in seconds
     def listen_command(self, max_duration=8, no_speech_timeout=5):
+        source = getattr(self._remote, "source", None)
+        if source is not None:
+            return source()
         self._notify(self.on_state, "listening")
         try:
             samplerate = self._samplerate()

@@ -15,6 +15,7 @@ from concurrent.futures import Future
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 try:
     import sounddevice  # noqa: F401
@@ -43,6 +44,9 @@ PROBLEM = screen_problem()
 
 
 def make_app(folder):
+    from src.core.remote import show_bot_in_window
+    from src.integrations.telegram.bot import TelegramBot
+    from src.integrations.telegram.settings import TelegramSettings
     from src.interface.interface import VoiceAssistantApp
     from src.interface.preferences import Preferences
     from src.productivity.apps import AppLauncher
@@ -94,7 +98,12 @@ def make_app(folder):
     library = V.VoiceLibrary(root=str(folder / "voices"))
     assistant.tts = TTS(library=library, settings=V.TtsSettings(str(folder / "tts.json")),
                         system_engine_factory=SystemVoices, neural_engine=NoNeuralVoice())
-    return VoiceAssistantApp(assistant, Preferences(folder / "ui" / "ui.json"))
+    # The bot of Telegram: the page of the window shows and changes it (nothing is started until a token is given)
+    assistant.telegram_settings = TelegramSettings(folder / "telegram.json")
+    assistant.telegram = TelegramBot(assistant.telegram_settings, host=None, trust_env=False)
+    app = VoiceAssistantApp(assistant, Preferences(folder / "ui" / "ui.json"))
+    show_bot_in_window(assistant.telegram, app)
+    return app
 
 
 @unittest.skipIf(PROBLEM, PROBLEM)
@@ -128,6 +137,26 @@ class WindowTests(unittest.TestCase):
         changed = self.app.change(**changes)
         self.pump(250)
         return changed
+
+    def pump_until(self, check, message, seconds=8.0):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self.pump(40)
+            if check():
+                return
+        self.fail(message)
+
+    @staticmethod
+    def texts_in(widget):
+        """The captions of all labels inside a widget."""
+        found = []
+        for child in tkinter.Misc.winfo_children(widget):
+            try:
+                found.append(child.cget("text"))
+            except Exception:
+                pass
+            found.extend(WindowTests.texts_in(child))
+        return found
 
     def tearDown(self):
         self.assertEqual(self.errors, [], "в окне случились ошибки")
@@ -247,6 +276,99 @@ class WindowTests(unittest.TestCase):
         self.change(user_name="Проверка")
         saved = json.loads(pathlib.Path(self.app.prefs.path).read_text(encoding="utf-8"))
         self.assertEqual(saved["user_name"], "Проверка")
+
+    def test_12_the_telegram_page_takes_a_token_links_an_account_and_unlinks_it(self):
+        from unittest import mock
+        from fake_telegram import TOKEN, FakeTelegram
+        fake = FakeTelegram()
+        self.addCleanup(fake.close)
+        settings, bot = self.app.assistant.telegram_settings, self.app.assistant.telegram
+        self.addCleanup(lambda: (bot.stop(), settings.update(token="", enabled=False)))
+        settings.update(api_base=fake.url)
+        self.app.show_page("telegram")
+        self.pump(150)
+        page = self.app.pages["telegram"]
+        self.assertEqual(page.status.cget("text"), "Выключен")
+        self.assertEqual(page.pair_button.cget("state"), "disabled")
+        # A token that Telegram does not know is refused and not kept
+        fake.fail("getMe", 401, "Unauthorized")
+        page.token_entry.insert(0, TOKEN)
+        page.save_token()
+        self.pump_until(lambda: "не принимает" in page.token_note.cget("text"), "no word about the wrong token")
+        self.assertEqual(settings.token, "")
+        # The right one: the bot is switched on and connects
+        page.token_entry.delete(0, "end")
+        page.token_entry.insert(0, TOKEN)
+        page.save_token()
+        self.pump_until(lambda: bot.state == "ok", "the bot did not connect")
+        self.assertEqual((settings.token, settings.enabled), (TOKEN, True))
+        self.pump(150)
+        self.assertIn("astra_test_bot", page.status.cget("text"))
+        self.assertEqual(self.app.status.lights["tg"].state, "ok")
+        self.assertEqual(page.token_entry.get(), "", "the token must not stay in the field")
+        self.assertNotIn(TOKEN, " ".join(self.texts_in(page)))
+        # Linking: a code appears, the person sends it, the account is in the list
+        page.start_pairing()
+        self.pump(100)
+        self.assertTrue(page.pair_panel.winfo_ismapped())
+        code = bot.pairing_info()[0]
+        self.assertIn(code, page.pair_code.cget("text"))
+        fake.text(42, f"/start {code}", first_name="Анна")
+        self.pump_until(lambda: settings.is_allowed(42), "the account was not linked")
+        self.pump_until(lambda: any("Анна" in text for text in self.texts_in(page.users_box)), "no account in the list")
+        self.pump(100)
+        self.assertFalse(page.pair_panel.winfo_ismapped(), "a code that was used must go away")
+        self.assertTrue(any("привязан аккаунт Анна" in item[1] for item in self.app.history), "no notice in the dialog")
+        # Unlinking asks first
+        with mock.patch("src.interface.telegram_page.messagebox.askyesno", return_value=False):
+            page.unlink(settings.users_snapshot()[0])
+        self.assertTrue(settings.is_allowed(42))
+        with mock.patch("src.interface.telegram_page.messagebox.askyesno", return_value=True):
+            page.unlink(settings.users_snapshot()[0])
+        self.assertFalse(settings.is_allowed(42))
+        self.pump_until(lambda: any("никто не привязан" in text for text in self.texts_in(page.users_box)),
+                        "the list was not emptied")
+        # The switch stops the bot
+        page._toggle(False)
+        self.pump(150)
+        self.assertEqual(bot.state, "off")
+        self.assertEqual(self.app.status.lights["tg"].state, "off")
+        self.assertFalse(settings.enabled)
+
+    def test_13_options_of_the_telegram_page_are_saved(self):
+        settings = self.app.assistant.telegram_settings
+        self.addCleanup(lambda: settings.update(confirm_risky=True, notify_planner=True, speak_on_pc=False, proxy=""))
+        self.app.show_page("telegram")
+        self.pump(100)
+        page = self.app.pages["telegram"]
+        page.confirm_switch.toggle()
+        page.remind_switch.toggle()
+        page.aloud_switch.toggle()
+        self.assertEqual((settings.confirm_risky, settings.notify_planner, settings.speak_on_pc),
+                         (False, False, True))
+        page.proxy_entry.delete(0, "end")
+        page.proxy_entry.insert(0, "socks5h://127.0.0.1:1080")
+        page.apply_connection()
+        self.assertEqual(settings.proxy, "socks5h://127.0.0.1:1080")
+        page.proxy_entry.delete(0, "end")
+        page.proxy_entry.insert(0, "не адрес")
+        page.apply_connection()
+        self.assertEqual(settings.proxy, "socks5h://127.0.0.1:1080", "a wrong address must not be saved")
+        self.assertIn("Прокси записывается так", page.connection_note.cget("text"))
+
+    def test_14_a_notice_goes_to_the_dialog_and_the_light_of_the_bot_follows_its_state(self):
+        self.app.notice("Telegram: привязан аккаунт Мария.")
+        self.app.set_service("tg", "error")
+        self.pump(150)
+        self.assertEqual(self.app.history[-1][:2], ("system", "Telegram: привязан аккаунт Мария."))
+        self.assertEqual(self.app.status.lights["tg"].state, "error")
+        self.app.set_service("tg", "off")
+        self.pump(60)
+        self.change(accent="violet")
+        self.assertEqual(self.app.history[-1][:2], ("system", "Telegram: привязан аккаунт Мария."))
+        self.assertEqual(self.app.status.lights["tg"].state, "off")
+        from src.interface import theme as t
+        self.assertIn("telegram", [key for key, _, _ in t.PAGES])
 
 
 if __name__ == "__main__":
