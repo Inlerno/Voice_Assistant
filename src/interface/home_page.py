@@ -247,7 +247,7 @@ class InputBar(ctk.CTkFrame):
 class HomePage(ctk.CTkFrame):
     """A welcome screen with the input field in the middle; with the first message it becomes a dialog."""
 
-    def __init__(self, master, app, history=()):
+    def __init__(self, master, app, history=(), draft=""):
         super().__init__(master, fg_color=t.BG, corner_radius=0)
         self.app = app
         self.hero_mode = True
@@ -255,6 +255,13 @@ class HomePage(ctk.CTkFrame):
         self.side_padding = 16
         self.message_labels = []
         self.rows = []
+        # The words that are being said (see set_draft): the widgets of the bubble, or None when nothing is being said.
+        # The draft is always the last row of the dialog
+        self._draft = None
+        # The draft has opened the dialog from the welcome screen: if it goes away with nothing said, the welcome
+        # screen comes back instead of an empty dialog
+        self._draft_opened_dialog = False
+        self._scroll_job = None
 
         self.canvas = HeroCanvas(self, app)
         self.canvas.place(x=0, y=0, relwidth=1, relheight=1)
@@ -282,6 +289,8 @@ class HomePage(ctk.CTkFrame):
         ).grid(row=0, column=3, padx=5)
         for role, text, meta, stamp in history:
             self.add_message(role, text, meta, stamp)
+        if draft:
+            self.set_draft(draft)
         self.bind("<Configure>", lambda _e: self.layout())
         self.layout()
 
@@ -341,6 +350,11 @@ class HomePage(ctk.CTkFrame):
         text = (text or "").strip()
         if not text:
             return
+        # The dialog has its content now, so the draft that opened it must not take the dialog back with it
+        self._draft_opened_dialog = False
+        if role != "system":
+            # The final text of the phrase takes the place of the words that were being said
+            self.end_draft()
         if self.hero_mode:
             self._enter_dialog()
         stamp = stamp or datetime.now()
@@ -351,7 +365,7 @@ class HomePage(ctk.CTkFrame):
                 self.chat, text=f"{stamp.strftime('%H:%M:%S')} · {text}", font=(t.FONT, 11),
                 text_color=t.MUTED, wraplength=self.wrap_length, justify="left", anchor="w",
             )
-            label.pack(fill="x", pady=(0, 8))
+            self._pack(label, fill="x", pady=(0, 8))
             label.pack_configure(padx=self.side_padding + 8)
             self.rows.append(label)
             self.message_labels.append(label)
@@ -363,7 +377,7 @@ class HomePage(ctk.CTkFrame):
             text = text[:1].upper() + text[1:]
         side = "e" if is_user else "w"
         row = ctk.CTkFrame(self.chat, fg_color="transparent")
-        row.pack(fill="x", pady=(0, 12))
+        self._pack(row, fill="x", pady=(0, 12))
         row.pack_configure(padx=self.side_padding)
         self.rows.append(row)
         bubble = ctk.CTkFrame(row, corner_radius=t.r(20), fg_color=t.BUBBLE_USER if is_user else t.BUBBLE_BOT)
@@ -396,14 +410,77 @@ class HomePage(ctk.CTkFrame):
     def _add_top_space(self):
         ctk.CTkFrame(self.chat, height=14, fg_color="transparent").pack()
 
+    def _pack(self, widget, **options):
+        """Puts a row at the end of the dialog, but above the draft: the words that are being said stay the last row."""
+        if self._draft is not None:
+            options["before"] = self._draft["row"]
+        widget.pack(**options)
+
     def _scroll_down(self):
-        self.after(30, self._to_bottom)
+        # The words of a phrase change several times a second: one scroll is enough for all of them
+        if self._scroll_job is None:
+            self._scroll_job = self.after(30, self._to_bottom)
 
     def _to_bottom(self):
+        self._scroll_job = None
         try:
             self.chat._parent_canvas.yview_moveto(1.0)
         except tk.TclError:
             pass
+
+    # ---------- The words that are being said ----------
+
+    def set_draft(self, text):
+        """The words of the phrase that is being said, as far as they are recognized.
+
+        They stand at the end of the dialog as a bubble that is written over each time the text changes, until the
+        final message takes its place (add_message). An empty text takes the bubble away."""
+        text = " ".join((text or "").split())
+        if not text:
+            self.end_draft()
+            return
+        text = text[:1].upper() + text[1:]
+        if self._draft is None:
+            if self.hero_mode:
+                self._enter_dialog()
+                self._draft_opened_dialog = True
+            self._draft = self._make_draft(text)
+        else:
+            self._draft["label"].configure(text=text)
+        self._scroll_down()
+
+    def _make_draft(self, text):
+        row = ctk.CTkFrame(self.chat, fg_color="transparent")
+        row.pack(fill="x", pady=(0, 12))
+        row.pack_configure(padx=self.side_padding)
+        # Not the color of a sent message: the bubble is soft and has a frame while the phrase is not final
+        bubble = ctk.CTkFrame(row, corner_radius=t.r(20), fg_color=t.ACCENT_SOFT, border_width=1,
+                              border_color=t.ACCENT_VIVID)
+        bubble.pack(anchor="e")
+        label = ctk.CTkLabel(bubble, text=text, font=(t.FONT, 14), text_color=t.TEXT, wraplength=self.wrap_length,
+                             justify="left", anchor="w")
+        label.pack(padx=16, pady=11)
+        footer = ctk.CTkLabel(row, text="Вы · говорите…", font=(t.FONT, 11), text_color=t.MUTED)
+        footer.pack(anchor="e", padx=6, pady=(3, 0))
+        self.rows.append(row)
+        self.message_labels.append(label)
+        return {"row": row, "label": label}
+
+    def has_draft(self):
+        return self._draft is not None
+
+    def end_draft(self):
+        """Takes the draft away: the phrase is over (its final message is added next) or nothing was understood."""
+        draft, self._draft = self._draft, None
+        if draft is None:
+            return
+        self.rows.remove(draft["row"])
+        self.message_labels.remove(draft["label"])
+        draft["row"].destroy()
+        if self._draft_opened_dialog:
+            # Nothing but the draft was in the dialog: the welcome screen comes back
+            self._draft_opened_dialog = False
+            self.clear()
 
     def _enter_dialog(self):
         self.hero_mode = False
@@ -418,6 +495,8 @@ class HomePage(ctk.CTkFrame):
         self._add_top_space()
         self.rows.clear()
         self.message_labels.clear()
+        self._draft = None
+        self._draft_opened_dialog = False
         self.chat.place_forget()
         self.hero_mode = True
         self.canvas.refresh_greeting()
@@ -445,6 +524,9 @@ class HomePage(ctk.CTkFrame):
             if self.canvas._redraw_job is not None:
                 self.canvas.after_cancel(self.canvas._redraw_job)
                 self.canvas._redraw_job = None
+            if self._scroll_job is not None:
+                self.after_cancel(self._scroll_job)
+                self._scroll_job = None
         except Exception:
             pass
         super().destroy()

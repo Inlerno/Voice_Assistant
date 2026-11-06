@@ -59,7 +59,7 @@ PAGE_KEYWORDS = {
     "tts": "озвучка речь tts синтез голоса скорость громкость",
     "telegram": "телеграм telegram бот чат голосовые сообщения токен привязать аккаунт прокси",
     "log": "журнал логи ошибки",
-    "settings": "оформление цвет тема шрифт размер масштаб обои",
+    "settings": "оформление цвет тема шрифт размер масштаб обои живой текст речи распознавание",
 }
 
 # Keys of the shortcuts as Windows numbers them: they do not depend on the keyboard layout, so the shortcuts work with
@@ -153,6 +153,8 @@ class VoiceAssistantApp:
         self.notifications = []
         # What the window is built again from (see the docstring of the module)
         self.history = deque(maxlen=HISTORY_LIMIT)
+        # The words that are being said right now and are not a message yet: they are put back after a rebuild
+        self.draft = ""
         self.log_lines = deque(maxlen=t.LOG_LINES_LIMIT)
         self.service_states = {}
         self.tts_downloads = {}
@@ -210,6 +212,11 @@ class VoiceAssistantApp:
     # meta is a short remark shown next to the time, for example how many milliseconds the recognition took
     def add_message(self, role, text, meta=None):
         self.events.put(("message", role, text, meta))
+
+    # The words of the phrase that is being said, as far as they are recognized (called from any thread). They stand in
+    # the dialog as a draft until the final message takes their place; an empty text takes the draft away
+    def show_partial(self, text):
+        self.events.put(("partial", text))
 
     # State of a service shown in the status bar: name is ai, stt or tts; state is ok, busy, error or off
     def set_service(self, name, state):
@@ -315,7 +322,7 @@ class VoiceAssistantApp:
     def _make_page(self, name):
         stack = self.stack
         if name == "home":
-            return HomePage(stack, self, history=list(self.history))
+            return HomePage(stack, self, history=list(self.history), draft=self.draft)
         if name == "log":
             return LogPage(stack, self, lines=list(self.log_lines))
         if name == "tts":
@@ -338,6 +345,8 @@ class VoiceAssistantApp:
             self._apply_window_prefs()
         if "remember_window" in changed and self.prefs.remember_window:
             self._save_window()
+        if "live_speech" in changed:
+            self._apply_live_speech()
         if changed & REBUILD_KEYS:
             self.schedule_rebuild()
             return changed
@@ -351,8 +360,23 @@ class VoiceAssistantApp:
             self.home.canvas.refresh_greeting()
         return changed
 
+    def _apply_live_speech(self):
+        """The recognizer is told whether to pass on the words that are being said; with the switch off the draft goes."""
+        setter = getattr(self.assistant, "set_live_speech", None)
+        if setter is not None:
+            setter(self.prefs.live_speech)
+        if not self.prefs.live_speech:
+            self._set_draft("")
+
+    def _set_draft(self, text):
+        self.draft = text
+        if self.shell is not None:
+            self.home.set_draft(text)
+
     def reset_appearance(self):
-        self.prefs.reset_appearance()
+        changed = self.prefs.reset_appearance()
+        if "live_speech" in changed:
+            self._apply_live_speech()
         self._apply_window_prefs()
         self.schedule_rebuild()
 
@@ -600,6 +624,7 @@ class VoiceAssistantApp:
 
     def new_dialog(self):
         self.show_page("home")
+        self.draft = ""
         self.home.clear()
         self.history.clear()
         history = getattr(getattr(self.assistant, "chat_gpt", None), "messages", None)
@@ -655,6 +680,10 @@ class VoiceAssistantApp:
         if state not in t.STATES:
             return
         self.state = state
+        if state != "listening" and self.draft:
+            # Whatever ended the listening, the words that were not final are not going to be (the final ones
+            # replace the draft themselves)
+            self._set_draft("")
         title, hint, _, _ = t.STATES[state]
         hint = hint.format(activation=self.activation_word)
         if self.sidebar is not None:
@@ -684,7 +713,14 @@ class VoiceAssistantApp:
         elif kind == "message":
             stamp = datetime.now()
             self.history.append((event[1], event[2], event[3], stamp))
+            if event[1] != "system":
+                # A message of the dialog takes the place of the words that were being said
+                self.draft = ""
             self.home.add_message(event[1], event[2], event[3], stamp)
+        elif kind == "partial":
+            # The words arrive from the recognizer thread: only while the microphone listens and the switch is on
+            if self.prefs.live_speech and (self.state == "listening" or not event[1]):
+                self._set_draft(event[1])
         elif kind == "log":
             self.log_lines.append(tuple(event[1:]))
             if "log" in self.pages:

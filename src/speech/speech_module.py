@@ -100,6 +100,10 @@ class SpeechRecognizer:
         self.on_activation = None
         # on_model(text): the state of the big model, for example that it has been loaded
         self.on_model = None
+        # on_partial(text): the words of a command that is being said, as far as they are recognized. It is called
+        # every time the text changes, and with "" when the live text has to go away (the phrase is over or there
+        # was nothing to hear). None turns it off: then the recognizer does not even ask for the partial text
+        self.on_partial = None
         # Jobs that need the microphone to themselves, they run on the assistant thread
         self._tasks = queue.Queue()
         # The source of phrases of the thread that works for another device (see command_from)
@@ -431,6 +435,10 @@ class SpeechRecognizer:
         if source is not None:
             return source()
         self._notify(self.on_state, "listening")
+        # The words that the interface shows while the phrase is being said (see on_partial): the last text that
+        # was passed on, so the same one is not passed twice
+        live_text = ""
+        live = self.on_partial is not None
         try:
             samplerate = self._samplerate()
             rec = vosk.KaldiRecognizer(self.command_model, samplerate)
@@ -467,12 +475,20 @@ class SpeechRecognizer:
 
                     started = time.perf_counter()
                     final = rec.AcceptWaveform(data)
+                    partial = None
                     if final:
                         # Vosk detected the end of the phrase: its text is in Result()
                         result_json = rec.Result()
-                    elif not speech_started and json.loads(rec.PartialResult()).get('partial'):
-                        speech_started = True
+                    elif live or not speech_started:
+                        partial = json.loads(rec.PartialResult()).get('partial', '').strip()
                     decode_ms += (time.perf_counter() - started) * 1000.0
+                    if partial:
+                        speech_started = True
+                    # An empty text in the middle of a phrase is Vosk taking back a guess ("да" that was a breath):
+                    # the guess stays on the screen until the next words replace it, so the line does not blink
+                    if live and partial and partial != live_text:
+                        live_text = partial
+                        self._notify(self.on_partial, partial)
                     if final:
                         break
                     if not speech_started and blocks >= timeout_blocks:
@@ -494,3 +510,7 @@ class SpeechRecognizer:
         except Exception as e:
             logger.error("Audio recording error: %s", e)
             return None
+        finally:
+            # The live text goes away after the final message (it takes its place) or when nothing was understood
+            if live_text:
+                self._notify(self.on_partial, "")

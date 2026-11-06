@@ -97,6 +97,8 @@ class Assistant:
         self.speech_recognizer.on_phrase = on_phrase
         self.speech_recognizer.on_activation = lambda info: ui.add_message("system", self.describe_activation(info))
         self.speech_recognizer.on_model = lambda text: (ui.add_message("system", text), ui.refresh_models())
+        # The words of a command appear in the dialog while they are being said, if the owner has not turned it off
+        self.set_live_speech(getattr(getattr(ui, "prefs", None), "live_speech", True))
         ui.set_service("stt", "ok")
         ui.set_service("tts", "ok")
         self.connect_telegram()
@@ -230,6 +232,12 @@ class Assistant:
     @property
     def listening(self):
         return not self.speech_recognizer.paused
+
+    # Show the words of a command in the dialog while they are being said (the switch of the settings). Off, the
+    # recognizer does not even ask for the text that is not final yet.
+    def set_live_speech(self, enabled):
+        ui = self.interface_manager
+        self.speech_recognizer.on_partial = ui.show_partial if enabled else None
 
     # What the "Model" page of the interface shows
     def models_info(self):

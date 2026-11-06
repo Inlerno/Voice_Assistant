@@ -63,6 +63,15 @@ class PreferencesTests(unittest.TestCase):
             self.assertEqual(getattr(prefs, name), P.DEFAULTS[name], name)
         self.assertIsNone(prefs.window)
 
+    def test_the_live_text_of_speech_is_on_by_default_and_is_a_switch(self):
+        prefs = P.Preferences(self.path)
+        self.assertIs(prefs.live_speech, True)
+        self.assertEqual(prefs.update(live_speech=False), {"live_speech"})
+        self.assertIs(P.Preferences(self.path).live_speech, False)
+        # anything but a real switch is replaced by the default (on)
+        self.assertEqual(prefs.update(live_speech="no"), {"live_speech"})
+        self.assertIs(prefs.live_speech, True)
+
     def test_any_color_can_be_the_accent(self):
         prefs = P.Preferences(self.path)
         prefs.update(accent="#3a7bd5")

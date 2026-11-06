@@ -42,9 +42,13 @@ class FakeUI:
     def __init__(self):
         self.messages = []
         self.states = []
+        self.partials = []
 
     def add_message(self, role, text, meta=None):
         self.messages.append((role, text, meta))
+
+    def show_partial(self, text):
+        self.partials.append(text)
 
     def set_state(self, state):
         self.states.append(state)
@@ -189,6 +193,28 @@ class MicrophoneSwitchTests(unittest.TestCase):
         self.assertTrue(assistant.speech_recognizer.paused)
         assistant.set_listening(True)
         self.assertTrue(assistant.listening)
+
+
+class LiveSpeechSwitchTests(unittest.TestCase):
+    def test_the_words_of_a_command_go_to_the_window_when_the_switch_is_on(self):
+        assistant = make_assistant()
+        assistant.set_live_speech(True)
+        assistant.speech_recognizer.on_partial("поставь таймер")
+        self.assertEqual(assistant.interface_manager.partials, ["поставь таймер"])
+
+    def test_with_the_switch_off_the_recognizer_has_no_listener(self):
+        assistant = make_assistant()
+        assistant.set_live_speech(True)
+        assistant.set_live_speech(False)
+        self.assertIsNone(assistant.speech_recognizer.on_partial)
+
+    def test_the_window_connection_reads_the_switch_of_the_settings(self):
+        for wanted, expected in ((True, "show_partial"), (False, None)):
+            assistant = make_assistant()
+            assistant.interface_manager.prefs = types.SimpleNamespace(live_speech=wanted)
+            assistant.set_live_speech(assistant.interface_manager.prefs.live_speech)
+            listener = assistant.speech_recognizer.on_partial
+            self.assertEqual(getattr(listener, "__name__", None), expected)
 
 
 class ModelsInfoTests(unittest.TestCase):

@@ -53,6 +53,7 @@ DEFAULTS = {
     "user_name": "",
     "show_chips": True,
     "show_timings": True,
+    "live_speech": True,                    # the words of a command are shown while they are being said
     "animations": True,
 }
 

@@ -76,6 +76,7 @@ def make_app(folder):
         def set_input_device(self, index): pass
         def set_appearance(self, mode): self.appearance = mode
         def set_listening(self, value): self.listening = value
+        def set_live_speech(self, value): self.live_speech = value
         def handle_text(self, text): return Future()
         def quick_add(self, text): return productivity.handle(text)
 
@@ -369,6 +370,168 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.app.status.lights["tg"].state, "off")
         from src.interface import theme as t
         self.assertIn("telegram", [key for key, _, _ in t.PAGES])
+
+    # ---------- The words that are being said ----------
+
+    def draft_texts(self):
+        """The captions of the dialog (the final messages, the notes and the draft)."""
+        return self.texts_in(self.app.home.chat)
+
+    def start_listening(self):
+        self.app.show_page("home")
+        self.app.new_dialog()
+        self.app.set_state("listening")
+        self.pump(120)
+
+    def test_15_the_words_stand_in_the_dialog_while_they_are_said_and_the_final_text_takes_their_place(self):
+        home = self.app.home
+        self.start_listening()
+        self.assertTrue(home.hero_mode)
+        self.app.show_partial("поставь")
+        self.pump(120)
+        self.assertFalse(home.hero_mode, "the dialog opens for the first words")
+        self.assertTrue(home.has_draft())
+        self.assertIn("Поставь", self.draft_texts())
+        self.assertIn("Вы · говорите…", self.draft_texts())
+        # The bubble is written over, not added to
+        rows = len(home.rows)
+        self.app.show_partial("поставь таймер")
+        self.pump(80)
+        self.assertIn("Поставь таймер", self.draft_texts())
+        self.assertNotIn("Поставь", self.draft_texts())
+        self.assertEqual(len(home.rows), rows)
+        # The recognizer ends the phrase: the message comes, then the live text is cleared
+        self.app.add_message("user", "поставь таймер на пять минут", "распознавание 412 мс")
+        self.app.show_partial("")
+        self.pump(150)
+        self.assertFalse(home.has_draft())
+        self.assertEqual(self.app.draft, "")
+        texts = self.draft_texts()
+        self.assertIn("Поставь таймер на пять минут", texts)
+        self.assertNotIn("Поставь таймер", texts)
+        self.assertNotIn("Вы · говорите…", texts)
+        self.app.new_dialog()
+        self.pump(100)
+
+    def test_16_the_draft_is_always_the_last_row_of_the_dialog(self):
+        home = self.app.home
+        self.start_listening()
+        self.app.add_message("assistant", "Слушаю")
+        self.app.show_partial("какая погода")
+        self.pump(120)
+        # Notes that come while somebody is speaking go above the words
+        self.app.add_message("system", "Большая модель готова")
+        self.app.add_message("system", "Слово «Астра» · голос совпал")
+        self.pump(150)
+        rows = home.chat.pack_slaves()
+        draft = home._draft["row"]
+        self.assertIs(rows[-1], draft)
+        self.assertEqual(sum(1 for row in rows if row is draft), 1)
+        self.assertEqual(len({id(row) for row in home.rows}), len(home.rows), "no row is listed twice")
+        self.assertTrue(home.has_draft(), "the words of the person are still there")
+        self.assertIn("Какая погода", self.draft_texts())
+        # The assistant answers: the words that were not final are not going to be
+        self.app.add_message("assistant", "Одну секунду")
+        self.pump(150)
+        self.assertFalse(home.has_draft())
+        self.assertIn("Одну секунду", self.draft_texts())
+        self.app.new_dialog()
+        self.pump(100)
+
+    def test_17_words_that_come_to_nothing_bring_the_welcome_screen_back(self):
+        home = self.app.home
+        self.start_listening()
+        self.app.show_partial("и")
+        self.pump(120)
+        self.assertFalse(home.hero_mode)
+        self.app.show_partial("")
+        self.pump(150)
+        self.assertFalse(home.has_draft())
+        self.assertTrue(home.hero_mode, "an empty dialog must not stay behind a noise")
+        self.assertTrue(home.canvas.winfo_ismapped())
+
+    def test_18_words_that_come_to_nothing_leave_an_existing_dialog_alone(self):
+        home = self.app.home
+        self.app.new_dialog()
+        self.app.add_message("user", "привет")
+        self.app.set_state("listening")
+        self.app.show_partial("и")
+        self.pump(150)
+        self.assertTrue(home.has_draft())
+        self.app.show_partial("")
+        self.pump(150)
+        self.assertFalse(home.has_draft())
+        self.assertFalse(home.hero_mode)
+        self.assertIn("Привет", self.draft_texts())
+        self.app.new_dialog()
+        self.pump(100)
+
+    def test_19_the_words_go_when_the_listening_is_over_for_any_reason(self):
+        home = self.app.home
+        self.start_listening()
+        self.app.add_message("user", "привет")
+        self.app.show_partial("пока")
+        self.pump(120)
+        self.assertTrue(home.has_draft())
+        self.app.set_state("paused")
+        self.pump(120)
+        self.assertFalse(home.has_draft())
+        self.assertEqual(self.app.draft, "")
+        # Words that arrive late, when the microphone no longer listens, are not shown
+        self.app.show_partial("опоздавшие слова")
+        self.pump(120)
+        self.assertFalse(home.has_draft())
+        self.app.new_dialog()
+        self.app.set_state("idle")
+        self.pump(100)
+
+    def test_20_the_switch_turns_the_live_text_off_and_tells_the_assistant(self):
+        assistant = self.app.assistant
+        self.start_listening()
+        self.app.add_message("user", "привет")
+        self.app.show_partial("пока")
+        self.pump(120)
+        self.assertTrue(self.app.home.has_draft())
+        self.assertTrue(self.change(live_speech=False))
+        self.assertFalse(assistant.live_speech)
+        self.assertFalse(self.app.home.has_draft(), "the words that are on the screen go with the switch")
+        self.app.show_partial("совсем новые слова")
+        self.pump(120)
+        self.assertFalse(self.app.home.has_draft())
+        self.assertTrue(self.change(live_speech=True))
+        self.assertTrue(assistant.live_speech)
+        self.app.show_partial("снова вижу")
+        self.pump(120)
+        self.assertTrue(self.app.home.has_draft())
+        self.app.new_dialog()
+        self.app.set_state("idle")
+        self.pump(100)
+
+    def test_21_the_words_survive_a_rebuild_of_the_window(self):
+        self.start_listening()
+        self.app.add_message("user", "привет")
+        self.app.show_partial("включи музыку")
+        self.pump(150)
+        self.change(accent="ocean")
+        home = self.app.home
+        self.assertTrue(home.has_draft())
+        self.assertIn("Включи музыку", self.draft_texts())
+        self.assertIs(home.chat.pack_slaves()[-1], home._draft["row"])
+        self.app.add_message("user", "включи музыку")
+        self.pump(150)
+        self.assertFalse(self.app.home.has_draft())
+        self.app.new_dialog()
+        self.app.set_state("idle")
+        self.pump(100)
+        self.change(accent="violet")
+
+    def test_22_the_switch_is_on_the_home_tab_of_the_settings(self):
+        self.app.show_page("settings")
+        page = self.app.pages["settings"]
+        page.show_tab("home")
+        self.pump(150)
+        self.assertIn("Живой текст речи", self.texts_in(page.groups["home"]))
+        self.app.show_page("home")
 
 
 if __name__ == "__main__":
