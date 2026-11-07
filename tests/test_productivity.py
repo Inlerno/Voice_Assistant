@@ -44,6 +44,24 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(self.duration("через час"), 3600)
         self.assertIsNone(self.duration("привет как дела"))
 
+    def test_durations_with_a_decimal_point(self):
+        # Whisper and a keyboard write "полтора часа" as 1,5 (the comma has already become a point)
+        self.assertEqual(self.duration("таймер на 1.5 часа"), 5400)
+        self.assertEqual(self.duration("таймер на 0.5 часа"), 1800)
+        self.assertEqual(self.duration("через 2.5 минуты"), 150)
+        self.assertEqual(self.duration("на 1.25 часа"), 4500)
+        self.assertEqual(self.duration("на 1.5 часа 10 минут"), 6000)
+
+    def test_a_point_between_numbers_is_a_decimal_only_before_a_unit_of_time(self):
+        self.assertEqual(rp.tokenize("через 1.5 часа"), ["через", "1.5", "часа"])
+        self.assertEqual(rp.tokenize("в 7.30 утра"), ["в", "7", "30", "утра"])
+        self.assertEqual(rp.tokenize("задача 3.5 литра молока"), ["задача", "3", "5", "литра", "молока"])
+        self.assertEqual(rp.tokenize("через 1.5 часовой"), ["через", "1", "5", "часовой"])
+        self.assertEqual(self.clock("разбуди в 7.30"), (7, 30, None))
+        # a number with a point is never a count or an hour
+        self.assertIsNone(rp.read_number(["1.5"], 0))
+        self.assertEqual(rp.read_number(["1.5"], 0, decimals=True), (1.5, 1))
+
     def test_clock_times(self):
         self.assertEqual(self.clock("будильник на семь тридцать"), (7, 30, None))
         self.assertEqual(self.clock("разбуди в 7:30"), (7, 30, None))
@@ -186,6 +204,17 @@ class PhraseTests(unittest.TestCase):
         self.say("таймер на час тридцать чай")
         (item,) = self.planner.items(TIMER)
         self.assertEqual((item["length"], item["text"]), (5400, "чай"))
+
+    def test_timer_with_a_decimal_number_of_hours(self):
+        self.assertIn("1 час 30 минут", self.say("поставь таймер на 1.5 часа"))
+        (item,) = self.planner.items(TIMER)
+        self.assertEqual(item["length"], 5400)
+
+    def test_reminder_in_one_and_a_half_hours_keeps_its_text(self):
+        self.say("напомни через 1.5 часа позвонить маме")
+        (item,) = self.planner.items(REMINDER)
+        self.assertEqual(item["text"], "позвонить маме")
+        self.assertEqual(item["due"], "2026-10-28T09:20:10")
 
     def test_timer_without_a_time_asks(self):
         self.assertIn("На сколько", self.say("поставь таймер"))

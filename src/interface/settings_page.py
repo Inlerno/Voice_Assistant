@@ -14,11 +14,13 @@ from src.interface import palette, wallpaper
 from src.interface import preferences as P
 from src.interface import theme as t
 from src.interface.pages import ModelSection, scrolling_page
+from src.interface.stt_section import SpeechSection
 from src.interface.widgets import (
     Card, Segmented, SettingRow, Swatch, divider, make_button, make_slider, make_switch, spacer,
 )
 
-TABS = (("look", "Оформление"), ("home", "Главная"), ("models", "Модели и о программе"))
+TABS = (("look", "Оформление"), ("home", "Главная"), ("speech", "Распознавание"),
+        ("models", "Модели и о программе"))
 APPEARANCE_CHOICES = (("Dark", "Тёмная"), ("Light", "Светлая"), ("System", "Системная"))
 NAV_OPTIONS = (("left", "Слева"), ("top", "Сверху"))
 HERO_OPTIONS = (("orb", "Шар"), ("logo", "Логотип"), ("minimal", "Минимализм"))
@@ -61,6 +63,7 @@ class SettingsPage(ctk.CTkFrame):
         self.groups = {
             "look": self._build_look(body),
             "home": self._build_home(body),
+            "speech": self._build_speech(body),
             "models": self._build_models(body),
         }
         for group in self.groups.values():
@@ -70,6 +73,9 @@ class SettingsPage(ctk.CTkFrame):
     def show_tab(self, key):
         self.app.settings_tab = key
         self.tabs.set(key)
+        if key == "speech":
+            # The folder of the models may have changed meanwhile (a model that was put in by hand)
+            self.speech.refresh()
         for name, group in self.groups.items():
             if name == key:
                 group.grid()
@@ -328,6 +334,15 @@ class SettingsPage(ctk.CTkFrame):
         if not self.app.change(background="glow"):
             self.app.home.apply_prefs()
 
+    # ---------- Speech recognition ----------
+
+    def _build_speech(self, parent):
+        group = ctk.CTkFrame(parent, fg_color="transparent")
+        group.grid_columnconfigure(0, weight=1)
+        self.speech = SpeechSection(group, self.app)
+        self.speech.grid(row=0, column=0, sticky="ew")
+        return group
+
     # ---------- Models and the program ----------
 
     def _build_models(self, parent):
@@ -337,7 +352,7 @@ class SettingsPage(ctk.CTkFrame):
         self.models.grid(row=0, column=0, sticky="ew")
         about = Card(
             group, "О программе",
-            "Распознавание речи работает офлайн (Vosk), ответы на свободные вопросы даёт локальная модель через "
+            "Распознавание речи работает офлайн (Vosk, по желанию Whisper), ответы на свободные вопросы даёт локальная модель через "
             "LM Studio. Подробный журнал сохраняется в logs/assistant.log. Поиск по всему, что умеет Астра, "
             "открывается по Ctrl+K.",
         )

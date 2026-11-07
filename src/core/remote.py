@@ -4,17 +4,16 @@ normalize_query() brings a typed phrase to the form of a spoken one. RemoteHost 
 Telegram bot (see src/integrations/telegram/bot.py): to check a command before it runs, to run it and to recognize a
 voice message.
 """
-import re
 from typing import NamedTuple, Optional
 
 from src.core.risky import LOCAL_ONLY_COMMANDS, RISKY_COMMANDS
-
-_SIGNS = re.compile(r"[^\w\s:]|(?<!\d):|:(?!\d)")
+from src.speech.spoken import strip_signs
 
 
 def normalize_query(text):
-    """A phrase as a spoken command arrives: lower case, no punctuation (a colon between digits stays: 7:30)."""
-    return re.sub(r"\s+", " ", _SIGNS.sub(" ", (text or "").lower())).strip()
+    """A phrase as a spoken command arrives: lower case, no punctuation (a colon between digits stays: 7:30, and
+    a decimal number is kept whole: 1,5 becomes 1.5)."""
+    return strip_signs(text)
 
 
 class Verdict(NamedTuple):

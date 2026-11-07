@@ -785,7 +785,9 @@ class TelegramBot:
             reply.add("Не расслышала ни слова. Скажите чётче или напишите текстом.")
             return None, None
         reply.add(f"🎙 «{text}»")
-        return text, f"голосовое · распознавание {stats['decode_ms']:.0f} мс"
+        # Whisper is named in the note (Vosk, the usual engine, is not)
+        engine = f" ({stats['engine']})" if stats.get("engine") else ""
+        return text, f"голосовое · распознавание{engine} {stats['decode_ms']:.0f} мс"
 
     def _typing(self, run, chat_id):
         try:

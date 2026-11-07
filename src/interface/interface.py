@@ -59,7 +59,7 @@ PAGE_KEYWORDS = {
     "tts": "озвучка речь tts синтез голоса скорость громкость",
     "telegram": "телеграм telegram бот чат голосовые сообщения токен привязать аккаунт прокси",
     "log": "журнал логи ошибки",
-    "settings": "оформление цвет тема шрифт размер масштаб обои живой текст речи распознавание",
+    "settings": "оформление цвет тема шрифт размер масштаб обои живой текст речи распознавание whisper vosk движок модель",
 }
 
 # Keys of the shortcuts as Windows numbers them: they do not depend on the keyboard layout, so the shortcuts work with
@@ -158,6 +158,7 @@ class VoiceAssistantApp:
         self.log_lines = deque(maxlen=t.LOG_LINES_LIMIT)
         self.service_states = {}
         self.tts_downloads = {}
+        self.stt_downloads = {}
         self.mic_device = device_by_index(getattr(assistant, "input_device", None))
         self.shell = self.sidebar = self.topbar = self.status = None
         self.palette = None
@@ -516,6 +517,8 @@ class VoiceAssistantApp:
             Entry("Включить или выключить микрофон", "Действие · Ctrl+M", "mic", self.toggle_listening,
                   "слушать пауза микрофон"),
             Entry("Проверить микрофон", "Действие", "mic", self.open_microphone_check, "уровень громкость тест"),
+            Entry("Движок распознавания: Vosk или Whisper", "Настройки", "mic", lambda: self.open_settings("speech"),
+                  "речь модель whisper vosk точность скачать"),
             Entry("Тёмная тема", "Оформление", "sliders", lambda: self.set_appearance("Dark"), "ночная dark"),
             Entry("Светлая тема", "Оформление", "sliders", lambda: self.set_appearance("Light"), "дневная light"),
             Entry("Тема как в Windows", "Оформление", "sliders", lambda: self.set_appearance("System"), "системная"),
@@ -631,6 +634,12 @@ class VoiceAssistantApp:
         if isinstance(history, list):
             history.clear()
 
+    def open_settings(self, tab):
+        """The page of the settings with one of its tabs."""
+        self.settings_tab = tab
+        self.show_page("settings")
+        self.pages["settings"].show_tab(tab)
+
     def open_microphone_check(self):
         self.show_page("voice")
         voice = self.pages["voice"]
@@ -731,8 +740,10 @@ class VoiceAssistantApp:
             if light is not None:
                 light.set_state(event[2])
         elif kind == "models":
-            if "settings" in self.pages:
-                self.pages["settings"].models.refresh()
+            page = self.pages.get("settings")
+            if page is not None:
+                page.models.refresh()
+                page.speech.refresh()
         elif kind == "planner":
             if "planner" in self.pages:
                 self.pages["planner"].refresh()
@@ -751,9 +762,22 @@ class VoiceAssistantApp:
             self.toast.show(event[1], "info", 5000)
         elif kind.startswith("tts_"):
             self._handle_tts_event(kind, event[1:])
+        elif kind.startswith("stt_"):
+            self._handle_stt_event(kind, event[1:])
         elif kind in ("mic_started", "mic_level", "mic_result", "enroll_progress", "enroll_done"):
             if "voice" in self.pages:
                 self.pages["voice"].handle_event(kind, *event[1:])
+
+    def _handle_stt_event(self, kind, args):
+        page = self.pages.get("settings")
+        if page is not None:
+            page.speech.handle_event(kind, *args)
+        elif kind == "stt_downloaded":
+            # The page is not there (the window was built again meanwhile): the result is still told to the user
+            model_id, error, cancelled = args
+            self.stt_downloads.pop(model_id, None)
+            if not cancelled:
+                self.toast.show(error or "Модель Whisper скачана", "error" if error else "ok", 4000)
 
     def _handle_tts_event(self, kind, args):
         page = self.pages.get("tts")

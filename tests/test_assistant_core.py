@@ -28,7 +28,12 @@ class FakeRecognizer:
         self.paused = False
         self.big_model_path = None
         self.big_model_state = "none"
+        self.engine_name = "Vosk"
+        self.big_loads = 0
         self.tasks = queue.Queue()
+
+    def start_big_model_loading(self):
+        self.big_loads += 1
 
     def set_paused(self, paused):
         self.paused = paused
@@ -217,6 +222,40 @@ class LiveSpeechSwitchTests(unittest.TestCase):
             self.assertEqual(getattr(listener, "__name__", None), expected)
 
 
+class EngineStartTests(unittest.TestCase):
+    def assistant_with(self, engine):
+        assistant = make_assistant()
+        assistant.stt = types.SimpleNamespace(settings=types.SimpleNamespace(engine=engine), starts=0)
+
+        def start():
+            assistant.stt.starts += 1
+
+        assistant.stt.start = start
+        return assistant
+
+    def test_with_vosk_the_big_model_is_loaded(self):
+        assistant = self.assistant_with("vosk")
+        assistant.start_engines()
+        self.assertEqual((assistant.speech_recognizer.big_loads, assistant.stt.starts), (1, 0))
+
+    def test_with_whisper_it_is_loaded_instead_of_the_big_model_to_spare_the_memory(self):
+        assistant = self.assistant_with("whisper")
+        assistant.start_engines()
+        self.assertEqual((assistant.speech_recognizer.big_loads, assistant.stt.starts), (0, 1))
+
+
+class RecognitionNoteTests(unittest.TestCase):
+    def test_vosk_is_not_named(self):
+        self.assertEqual(Assistant.describe_recognition({"decode_ms": 412.4, "audio_s": 2.6, "engine": None}),
+                         "распознавание 412 мс · запись 2.6 с")
+        self.assertEqual(Assistant.describe_recognition({"decode_ms": 12.0, "audio_s": 1.0}),
+                         "распознавание 12 мс · запись 1.0 с")
+
+    def test_whisper_is_named(self):
+        self.assertEqual(Assistant.describe_recognition({"decode_ms": 1530.0, "audio_s": 3.0, "engine": "Whisper base"}),
+                         "распознавание (Whisper base) 1530 мс · запись 3.0 с")
+
+
 class ModelsInfoTests(unittest.TestCase):
     def test_without_big_model(self):
         info = make_assistant().models_info()
@@ -231,6 +270,12 @@ class ModelsInfoTests(unittest.TestCase):
         info = assistant.models_info()
         self.assertEqual(info["big_model"], "vosk-model-ru-0.42")
         self.assertEqual(info["big_model_state"], "ready")
+
+    def test_the_engine_that_recognizes_the_commands_is_named(self):
+        assistant = make_assistant()
+        self.assertEqual(assistant.models_info()["engine"], "Vosk")
+        assistant.speech_recognizer.engine_name = "Whisper base"
+        self.assertEqual(assistant.models_info()["engine"], "Whisper base")
 
 
 if __name__ == "__main__":

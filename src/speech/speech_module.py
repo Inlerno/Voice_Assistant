@@ -12,6 +12,7 @@ import sounddevice as sd
 import vosk
 
 from src.speech.voice_profile import VoiceProfile, sample_features, word_features
+from src.speech.whisper_engine import WhisperEngine, is_noise_text, to_spoken
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,9 @@ def find_big_model(assets_dir=ASSETS_DIR):
 WAKE_BUFFER_SECONDS = 3.0
 # The recognizer checks for new audio at this interval, in seconds
 WAKE_BLOCK_SECONDS = 0.1
+# Whisper gets the recording from this many blocks of 0.2 s before the block in which Vosk first heard words:
+# Vosk shows a word a little after it has begun
+WHISPER_LEAD_IN_BLOCKS = 4
 # A sample for the voice profile must be spoken within this time, in seconds
 ENROLL_TIMEOUT_SECONDS = 10.0
 # Samples needed at least to build a profile
@@ -104,6 +108,14 @@ class SpeechRecognizer:
         # every time the text changes, and with "" when the live text has to go away (the phrase is over or there
         # was nothing to hear). None turns it off: then the recognizer does not even ask for the partial text
         self.on_partial = None
+        # What recognizes commands: "vosk", or "whisper" once its model has been loaded (see use_engine). While Whisper
+        # is loading, Vosk goes on working. whisper_state: none, loading, ready or failed
+        self.engine = "vosk"
+        self.whisper = None
+        self.whisper_state = "none"
+        self._engine_generation = 0
+        # on_engine(text): what happened to the engine, for example that Whisper has been loaded
+        self.on_engine = None
         # Jobs that need the microphone to themselves, they run on the assistant thread
         self._tasks = queue.Queue()
         # The source of phrases of the thread that works for another device (see command_from)
@@ -120,7 +132,9 @@ class SpeechRecognizer:
 
     # Load the big model in the background, the assistant works with the small one meanwhile.
     # Returns the thread, or None when there is no big model or it has been started already.
-    # Called after the callbacks are set, so the interface does not miss the messages.
+    # Called after the callbacks are set, so the interface does not miss the messages. With Whisper as the engine it
+    # is not called at first (the big model takes a lot of memory and would not be used): it starts when Vosk
+    # has to recognize the commands after all.
     def start_big_model_loading(self):
         if self.big_model_path is None or self._big_model_started:
             return None
@@ -150,6 +164,87 @@ class SpeechRecognizer:
         logger.info("Большая модель готова за %.0f с", seconds)
         self._notify(self.on_model, f"Большая модель {path.name} готова ({seconds:.0f} с). Команды теперь "
                                     f"распознаются точнее, но немного дольше.")
+
+    # ---------- The engine that recognizes commands ----------
+
+    # Make Whisper or Vosk the recognizer of commands. folder is the folder of an installed Whisper model.
+    # Whisper takes seconds to load, so it loads in the background and takes over when it is ready; the commands
+    # are recognized by Vosk until then (and for good, if the model cannot be loaded).
+    # Returns the thread that loads the model, or None when there is nothing to load.
+    def use_engine(self, engine, folder=None, language="ru", threads=None, factory=None):
+        self._engine_generation += 1
+        generation = self._engine_generation
+        if engine != "whisper":
+            self.engine = "vosk"
+            self.whisper = None
+            self.whisper_state = "none"
+            self._notify(self.on_engine, "Команды распознаёт Vosk.")
+            self.start_big_model_loading()
+            return None
+        if folder is None:
+            self.engine = "vosk"
+            self.whisper = None
+            self.whisper_state = "failed"
+            self._notify(self.on_engine, "Модель Whisper не выбрана: команды распознаёт Vosk.")
+            self.start_big_model_loading()
+            return None
+        self.whisper_state = "loading"
+        thread = threading.Thread(target=self._load_whisper, args=(Path(folder), language, threads, factory, generation),
+                                  daemon=True, name="whisper-load")
+        thread.start()
+        return thread
+
+    def _load_whisper(self, folder, language, threads, factory, generation):
+        started = time.perf_counter()
+        logger.info("Загрузка Whisper %s", folder.name)
+        self._notify(self.on_engine, f"Загружаю Whisper {folder.name}, это может занять до минуты. "
+                                     f"Пока команды распознаёт Vosk.")
+        try:
+            engine = WhisperEngine(folder, language, threads, factory)
+            engine.load()
+        except Exception:
+            logger.exception("Не удалось загрузить Whisper %s", folder)
+            if generation == self._engine_generation:
+                self.engine = "vosk"
+                self.whisper = None
+                self.whisper_state = "failed"
+                self._notify(self.on_engine, "Whisper загрузить не удалось (см. журнал), команды распознаёт Vosk.")
+                self.start_big_model_loading()
+            return
+        if generation != self._engine_generation:
+            # Another engine or model was chosen while this one was loading
+            return
+        # One assignment each: a command that is being recognized right now keeps the engine it started with
+        self.whisper = engine
+        self.engine = "whisper"
+        self.whisper_state = "ready"
+        seconds = time.perf_counter() - started
+        logger.info("Whisper %s готов за %.0f с", folder.name, seconds)
+        self._notify(self.on_engine, f"Whisper {folder.name} готов ({seconds:.0f} с). Команды теперь распознаёт он.")
+
+    # The Whisper that recognizes commands now, or None when Vosk does
+    def _active_whisper(self):
+        return self.whisper if self.engine == "whisper" else None
+
+    # What the interface calls the engine that recognizes commands: "Vosk" or "Whisper base"
+    @property
+    def engine_name(self):
+        whisper = self._active_whisper()
+        return f"Whisper {whisper.name}" if whisper is not None else "Vosk"
+
+    # The text of the recording that Whisper made, in the form of a spoken command; "" when there was no speech in
+    # it or Whisper made nothing but noise. Returns None when Whisper failed (the caller falls back to Vosk).
+    def _whisper_text(self, whisper, pcm, rate):
+        try:
+            raw = whisper.transcribe(pcm, rate)
+        except Exception:
+            logger.exception("Whisper не смог распознать запись, используется Vosk")
+            return None
+        if is_noise_text(raw):
+            if raw.strip():
+                logger.info("Whisper выдумал текст на тишине, он отброшен: %s", raw)
+            return ""
+        return to_spoken(raw)
 
     # ---------- Exclusive jobs ----------
 
@@ -395,8 +490,20 @@ class SpeechRecognizer:
     # Recognize a recording (16-bit mono PCM, for example a voice message from a chat) with the model that
     # recognizes commands. The microphone is not touched, so it works on any thread while the assistant listens
     # (a Vosk model may be shared, every call has a recognizer of its own).
-    # Returns (text in lower case, {"decode_ms": ..., "audio_s": ...}); the text is empty when there was no speech.
+    # Returns (text in lower case, {"decode_ms": ..., "audio_s": ..., "engine": ...}); the text is empty when there was
+    # no speech. The engine is the one that is chosen for commands: Whisper, if it has been loaded, otherwise Vosk.
     def transcribe(self, pcm: bytes, rate: int = 16000):
+        whisper = self._active_whisper()
+        if whisper is not None:
+            started = time.perf_counter()
+            text = self._whisper_text(whisper, pcm, rate)
+            if text is not None:
+                stats = {"decode_ms": (time.perf_counter() - started) * 1000.0, "audio_s": len(pcm) / 2 / rate,
+                         "engine": f"Whisper {whisper.name}"}
+                logger.info("Распознана запись: %s (%s %.0f мс, запись %.1f с)", text or "<тишина>",
+                            stats["engine"], stats["decode_ms"], stats["audio_s"])
+                return text, stats
+            # Whisper could not do it: the recording goes to Vosk
         recognizer = vosk.KaldiRecognizer(self.command_model, rate)
         started = time.perf_counter()
         parts = []
@@ -439,9 +546,13 @@ class SpeechRecognizer:
         # was passed on, so the same one is not passed twice
         live_text = ""
         live = self.on_partial is not None
+        # Whisper recognizes a whole phrase at once, it cannot follow a stream. So Vosk (the small model, it is quick)
+        # finds the end of the phrase and shows its words while they are being said, and Whisper then recognizes
+        # the recording of the phrase. The recording is kept only when Whisper is going to use it.
+        whisper = self._active_whisper()
         try:
             samplerate = self._samplerate()
-            rec = vosk.KaldiRecognizer(self.command_model, samplerate)
+            rec = vosk.KaldiRecognizer(self.model if whisper is not None else self.command_model, samplerate)
             block_seconds = 0.2
             blocksize = int(samplerate * block_seconds)
             command_queue = queue.Queue()
@@ -456,6 +567,8 @@ class SpeechRecognizer:
             blocks = 0
             decode_ms = 0.0
             speech_started = False
+            speech_block = None
+            recorded = []
             result_json = None
             with sd.RawInputStream(
                 samplerate=samplerate,
@@ -472,6 +585,8 @@ class SpeechRecognizer:
                         logger.warning("Audio stream produced no data")
                         break
                     blocks += 1
+                    if whisper is not None:
+                        recorded.append(data)
 
                     started = time.perf_counter()
                     final = rec.AcceptWaveform(data)
@@ -484,6 +599,8 @@ class SpeechRecognizer:
                     decode_ms += (time.perf_counter() - started) * 1000.0
                     if partial:
                         speech_started = True
+                    if (partial or final) and speech_block is None:
+                        speech_block = blocks
                     # An empty text in the middle of a phrase is Vosk taking back a guess ("да" that was a breath):
                     # the guess stays on the screen until the next words replace it, so the line does not blink
                     if live and partial and partial != live_text:
@@ -500,9 +617,21 @@ class SpeechRecognizer:
                 result_json = rec.FinalResult()
                 decode_ms += (time.perf_counter() - started) * 1000.0
             query = json.loads(result_json).get('text', '').lower().strip()
+            engine = None
+            if query and whisper is not None:
+                # Vosk heard words: Whisper recognizes the phrase (without the silence before it), its text replaces
+                # the one of Vosk. If Whisper fails, the text of Vosk stays; if it hears nothing, there was no phrase.
+                first = max(0, (speech_block or 1) - 1 - WHISPER_LEAD_IN_BLOCKS)
+                self._notify(self.on_state, "processing")
+                started = time.perf_counter()
+                heard = self._whisper_text(whisper, b"".join(recorded[first:]), samplerate)
+                decode_ms += (time.perf_counter() - started) * 1000.0
+                if heard is not None:
+                    query, engine = heard, f"Whisper {whisper.name}"
             if query:
-                stats = {"decode_ms": decode_ms, "audio_s": blocks * block_seconds}
-                logger.info("Recognized: %s (Vosk %.0f мс, запись %.1f с)", query, decode_ms, stats["audio_s"])
+                stats = {"decode_ms": decode_ms, "audio_s": blocks * block_seconds, "engine": engine}
+                logger.info("Recognized: %s (%s %.0f мс, запись %.1f с)", query, engine or "Vosk", decode_ms,
+                            stats["audio_s"])
                 self._notify(self.on_phrase, query, stats)
                 self._notify(self.on_state, "processing")
                 return query

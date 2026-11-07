@@ -76,18 +76,21 @@ def evaluate_signal(peak_db: float, clipped_share: float) -> MicCheckResult:
 #   device     - input device index (None for the system default)
 #   duration   - length of the test in seconds
 #   model      - loaded Vosk model; when given, the recorded speech is recognized too
+#   transcribe - function (16-bit mono PCM, rate) -> text, for another engine than Vosk (Whisper): the recording is
+#                recognized by it at the end of the test instead of by the model
 #   on_level   - called with the meter position (0..1) for every block, from the calling thread
 #   stop_event - threading.Event, the test stops early when it is set
 def check_microphone(device, duration=5.0, model=None, on_level: Optional[Callable[[float], None]] = None,
-                     stop_event=None) -> MicCheckResult:
+                     stop_event=None, transcribe=None) -> MicCheckResult:
     try:
         samplerate = int(sd.query_devices(device, 'input')['default_samplerate'])
-        recognizer = vosk.KaldiRecognizer(model, samplerate) if model is not None else None
+        recognizer = vosk.KaldiRecognizer(model, samplerate) if model is not None and transcribe is None else None
     except Exception as e:
         logger.error("Mic check: cannot open device %s: %s", device, e)
         return MicCheckResult("error", f"Не удалось открыть микрофон: {e}")
 
     audio = queue.Queue()
+    recorded = [] if transcribe is not None else None
     peak = 0
     clipped = 0
     total = 0
@@ -129,6 +132,8 @@ def check_microphone(device, duration=5.0, model=None, on_level: Optional[Callab
                     on_level(db_to_meter(block_level_db(samples)))
                 if recognizer is not None:
                     recognizer.AcceptWaveform(data)
+                if recorded is not None:
+                    recorded.append(data)
     except Exception as e:
         logger.error("Mic check failed on device %s: %s", device, e)
         return MicCheckResult("error", f"Не удалось открыть микрофон: {e}. Возможно, он занят другой программой.")
@@ -143,6 +148,11 @@ def check_microphone(device, duration=5.0, model=None, on_level: Optional[Callab
     if recognizer is not None:
         try:
             result.text = json.loads(recognizer.FinalResult()).get('text', '').strip() or None
+        except Exception as e:
+            logger.error("Mic check recognition failed: %s", e)
+    elif recorded:
+        try:
+            result.text = transcribe(b"".join(recorded), samplerate).strip() or None
         except Exception as e:
             logger.error("Mic check recognition failed: %s", e)
     logger.info("Mic check: %s, peak %.1f dBFS, text: %s", result.status, peak_db, result.text)

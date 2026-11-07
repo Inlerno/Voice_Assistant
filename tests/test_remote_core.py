@@ -90,6 +90,12 @@ class QueryTests(unittest.TestCase):
             "Привет — как дела?": "привет как дела",
             "Таймер 5 мин.": "таймер 5 мин",
             "ёлка": "ёлка",
+            "Таймер на 1,5 часа.": "таймер на 1.5 часа",
+            "Таймер на 1.5 часа!": "таймер на 1.5 часа",
+            "Будильник на 7.30": "будильник на 7.30",
+            "Хорошо, таймер на 5 минут. Спасибо": "хорошо таймер на 5 минут спасибо",
+            "1,5": "1.5",
+            "Число пи 3,14159...": "число пи 3.14159",
             "?!": "",
             "": "",
             None: "",
@@ -287,6 +293,7 @@ class RecognizerTests(unittest.TestCase):
         recognizer = object.__new__(sm.SpeechRecognizer)
         recognizer._remote = threading.local()
         recognizer.command_model = "the model of commands"
+        recognizer.engine, recognizer.whisper = "vosk", None
         return recognizer
 
     def setUp(self):

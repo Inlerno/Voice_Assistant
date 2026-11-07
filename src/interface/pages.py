@@ -111,6 +111,13 @@ class ModelSection(ctk.CTkFrame):
         self.small[1].configure(text="")
         title, color, hint = self.BIG_STATES.get(info["big_model_state"], self.BIG_STATES["none"])
         name = info["big_model"] or "vosk-model-ru-0.42"
+        engine = info.get("engine", "Vosk")
+        if engine != "Vosk":
+            # Whisper recognizes the commands: the big model of Vosk is not used (it waits in the library)
+            title, color = "работает", t.OK
+            name = engine
+            hint = ("Команды после слова «Астра» и голосовые из Telegram распознаёт Whisper. Выбрать другой движок "
+                    "можно во вкладке «Распознавание».")
         self.big[0].configure(text=f"{name} — {title}", text_color=color)
         self.big[1].configure(text=hint)
         self.llm[0].configure(text=info["llm"], text_color=t.TEXT)

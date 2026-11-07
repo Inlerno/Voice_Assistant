@@ -21,6 +21,7 @@ from src.productivity.skills import Productivity
 from src.productivity import ru_parse
 from src.audio.sound_module import SoundPlayer
 from src.speech.speech_module import SpeechRecognizer
+from src.speech.stt_control import SttControl
 from src.system.system_control import SystemControl
 from src.speech.tts_module import TTS
 from src.speech import voice_commands
@@ -41,6 +42,8 @@ class Assistant:
 
         self.tts = TTS()
         self.speech_recognizer = SpeechRecognizer(input_device=self.input_device)
+        # The engine that recognizes commands (Vosk or Whisper) and the Whisper models that are downloaded
+        self.stt = SttControl(self.speech_recognizer)
         self.sound_player = SoundPlayer()
         self.network_actions = NetworkActions()
         self.system_control = SystemControl(self.tts.speak, self.speech_recognizer.listen_command)
@@ -70,9 +73,7 @@ class Assistant:
 
         def on_phrase(text, stats):
             self._answer_started = time.perf_counter()
-            ui.add_message(
-                "user", text, f"распознавание {stats['decode_ms']:.0f} мс · запись {stats['audio_s']:.1f} с"
-            )
+            ui.add_message("user", text, self.describe_recognition(stats))
 
         def on_speak(text):
             started, self._answer_started = self._answer_started, None
@@ -97,13 +98,22 @@ class Assistant:
         self.speech_recognizer.on_phrase = on_phrase
         self.speech_recognizer.on_activation = lambda info: ui.add_message("system", self.describe_activation(info))
         self.speech_recognizer.on_model = lambda text: (ui.add_message("system", text), ui.refresh_models())
+        self.speech_recognizer.on_engine = lambda text: (ui.add_message("system", text), ui.refresh_models())
         # The words of a command appear in the dialog while they are being said, if the owner has not turned it off
         self.set_live_speech(getattr(getattr(ui, "prefs", None), "live_speech", True))
         ui.set_service("stt", "ok")
         ui.set_service("tts", "ok")
         self.connect_telegram()
-        # The big model (if it was downloaded) loads in the background while the assistant already works
-        self.speech_recognizer.start_big_model_loading()
+        self.start_engines()
+
+    # What recognizes the commands loads in the background while the assistant already works: Whisper if the user
+    # has chosen it, otherwise the big model of Vosk (if it was downloaded). Both together would take a lot of memory
+    # and only one of them is used, so the big model of Vosk loads later, if Whisper cannot be used.
+    def start_engines(self):
+        if self.stt.settings.engine == "whisper":
+            self.stt.start()
+        else:
+            self.speech_recognizer.start_big_model_loading()
 
     # A command typed in the interface instead of being said. It runs on the assistant thread,
     # when the microphone is free, exactly like a spoken command. Returns a Future, or None for an empty text.
@@ -247,7 +257,15 @@ class Assistant:
             "big_model": Path(recognizer.big_model_path).name if recognizer.big_model_path else None,
             "big_model_state": recognizer.big_model_state,
             "llm": self.chat_gpt.model_name,
+            "engine": recognizer.engine_name,
         }
+
+    # The note under a recognized phrase: the engine (Whisper is named, Vosk, the usual one, is not), the time the
+    # recognition took and the length of the recording
+    @staticmethod
+    def describe_recognition(stats):
+        engine = f" ({stats['engine']})" if stats.get("engine") else ""
+        return f"распознавание{engine} {stats['decode_ms']:.0f} мс · запись {stats['audio_s']:.1f} с"
 
     # One line for the dialog: what was heard as the wake word, whether the voice matched and how long it took
     @staticmethod

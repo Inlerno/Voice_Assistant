@@ -11,7 +11,6 @@ Exit code 77: there is no vosk or no model here, nothing could be tried.
 import json
 import sys
 import time
-import types
 from concurrent.futures import Future
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -28,13 +27,10 @@ except Exception:
     sys.exit(77)
 if not (MODEL / "am").is_dir():
     sys.exit(77)
-try:
-    import sounddevice  # noqa: F401
-except Exception:                                           # PortAudio is not there (a build server)
-    stub = types.ModuleType("sounddevice")
-    stub.default = types.SimpleNamespace(device=(1, 1))
-    stub.query_devices = lambda *args, **kwargs: {"default_samplerate": 16000}
-    sys.modules["sounddevice"] = stub
+
+import recorded_mic  # noqa: E402
+
+recorded_mic.stub_sound()
 
 from fake_telegram import TOKEN, FakeTelegram  # noqa: E402
 from src.core.remote import Verdict, normalize_query  # noqa: E402
@@ -49,8 +45,9 @@ DANGEROUS = {"выключи компьютер": "выключит компью
 class Host:
     """The assistant as the bot sees it: the recognizer is the real one, the commands only leave a note."""
 
-    def __init__(self, model):
-        self.recognizer = types.SimpleNamespace(command_model=model)
+    def __init__(self):
+        # The real recognizer with the small model; nothing listens to the microphone, only recordings are given to it
+        self.recognizer = SpeechRecognizer(str(MODEL), input_device=0, profile=object(), big_model_path=None)
         self.ran, self.notes = [], []
 
     def check(self, text):
@@ -66,7 +63,7 @@ class Host:
         return future
 
     def transcribe(self, pcm, rate):
-        return SpeechRecognizer.transcribe(self.recognizer, pcm, rate)
+        return self.recognizer.transcribe(pcm, rate)
 
 
 def wait(check, what, seconds=60):
@@ -80,7 +77,7 @@ def wait(check, what, seconds=60):
 
 def main():
     vosk.SetLogLevel(-1)
-    host = Host(vosk.Model(str(MODEL)))
+    host = Host()
     with TemporaryDirectory() as folder:
         fake = FakeTelegram()
         settings = TelegramSettings(Path(folder) / "telegram.json")

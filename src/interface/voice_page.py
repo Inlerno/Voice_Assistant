@@ -152,6 +152,10 @@ class VoicePage(ctk.CTkFrame):
         recognizer = getattr(self.assistant, "speech_recognizer", None)
         # The model that recognizes commands, so the test shows what the assistant will really understand
         model = getattr(recognizer, "command_model", None) or getattr(recognizer, "model", None)
+        # With Whisper as the engine the recording is recognized by it, not by the model of Vosk
+        transcribe = None
+        if getattr(recognizer, "engine", "vosk") == "whisper" and hasattr(recognizer, "transcribe"):
+            transcribe = lambda pcm, rate: recognizer.transcribe(pcm, rate)[0]  # noqa: E731
         self.mic_test_stop = threading.Event()
         stop_event = self.mic_test_stop
         self.mic_test_running = True
@@ -168,6 +172,7 @@ class VoicePage(ctk.CTkFrame):
             return check_microphone(
                 device, duration=MIC_TEST_SECONDS, model=model,
                 on_level=lambda level: events.put(("mic_level", level)), stop_event=stop_event,
+                transcribe=transcribe,
             )
 
         def done(future):

@@ -45,6 +45,7 @@ class FakeHost:
         self.risky = {}
         self.local_only = set()
         self.checked, self.ran, self.transcribed = [], [], []
+        self.engine = None             # what the assistant says recognized the voice (None for the usual Vosk)
         self.lock = threading.Lock()
 
     def check(self, text):
@@ -71,7 +72,7 @@ class FakeHost:
         with self.lock:
             self.transcribed.append((len(pcm), rate))
         text = self.recognized
-        return text, {"decode_ms": 12.0, "audio_s": len(pcm) / 2 / rate}
+        return text, {"decode_ms": 12.0, "audio_s": len(pcm) / 2 / rate, "engine": self.engine}
 
 
 class BotCase(unittest.TestCase):
@@ -421,6 +422,13 @@ class VoiceOrderTests(BotCase):
         self.assertEqual(text, "поставь таймер на пять минут")
         self.assertIn("голосовое", note)
         self.assertIn("12 мс", note)
+
+    def test_whisper_is_named_in_the_note_and_vosk_is_not(self):
+        self.voice(opus())
+        self.assertEqual(self.host.ran[0][1], "голосовое · распознавание 12 мс")
+        self.host.engine = "Whisper base"
+        self.voice(opus())
+        self.assertEqual(self.host.ran[1][1], "голосовое · распознавание (Whisper base) 12 мс")
 
     def test_nothing_recognized(self):
         self.host.recognized = ""

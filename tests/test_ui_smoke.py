@@ -4,8 +4,10 @@ Needs a screen (on Linux a virtual one is enough: xvfb-run python -m unittest); 
 """
 import os
 import pathlib
+import shutil
 import sys
 import tempfile
+import threading
 import time
 import tkinter
 import traceback
@@ -43,6 +45,51 @@ def screen_problem():
 PROBLEM = screen_problem()
 
 
+class FakeRecognizer:
+    """The recognizer as the settings page sees it: which engine works, and the loading of Whisper that takes a while."""
+
+    def __init__(self):
+        self.engine, self.whisper_state, self.calls = "vosk", "none", []
+        self.engine_name = "Vosk"
+
+    def use_engine(self, engine, folder=None, language="ru", threads=None, factory=None):
+        self.calls.append((engine, folder.name if folder else None, language))
+        if engine == "whisper" and folder is not None:
+            self.whisper_state = "loading"
+        else:
+            self.engine, self.engine_name = "vosk", "Vosk"
+            self.whisper_state = "failed" if engine == "whisper" else "none"
+
+    def finish_loading(self, name):
+        self.engine, self.engine_name, self.whisper_state = "whisper", f"Whisper {name}", "ready"
+
+
+class FakeDownloads:
+    """The download of a Whisper model: it waits at the gate (the test decides when it goes on) and watches the cancel."""
+
+    def __init__(self, archive):
+        self.archive = archive
+        self.gate = threading.Event()
+        self.gate.set()
+        self.error = None
+        self.requested = []
+
+    def __call__(self, url, destination, progress=None, cancel=None):
+        from src.speech.whisper_engine import SttCancelled, SttError
+        self.requested.append(url)
+        progress(0.25)
+        while not self.gate.wait(0.02):
+            if cancel is not None and cancel.is_set():
+                raise SttCancelled("Загрузка отменена.")
+        if cancel is not None and cancel.is_set():
+            raise SttCancelled("Загрузка отменена.")
+        if self.error:
+            raise SttError(self.error)
+        pathlib.Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(self.archive, destination)
+        progress(1.0)
+
+
 def make_app(folder):
     from src.core.remote import show_bot_in_window
     from src.integrations.telegram.bot import TelegramBot
@@ -53,7 +100,11 @@ def make_app(folder):
     from src.productivity.planner import Planner
     from src.productivity.skills import Productivity
     from src.speech import voices as V
+    from src.speech.stt_control import SttControl
+    from src.speech.stt_settings import SttSettings
     from src.speech.tts_module import TTS
+    from src.speech.whisper_engine import WhisperLibrary
+    from test_whisper_engine import make_archive
 
     folder = pathlib.Path(folder)
     planner = Planner(path=str(folder / "planner.json"))
@@ -81,7 +132,8 @@ def make_app(folder):
         def quick_add(self, text): return productivity.handle(text)
 
         def models_info(self):
-            return {"small_model": "small", "big_model": "big", "big_model_state": "ready", "llm": "model"}
+            return {"small_model": "small", "big_model": "big", "big_model_state": "ready", "llm": "model",
+                    "engine": self.speech_recognizer.engine_name}
 
     class SystemVoices:
         default_id = "sapi:one"
@@ -96,6 +148,11 @@ def make_app(folder):
 
     assistant = Assistant()
     assistant.planner, assistant.apps = planner, apps
+    # The engine of the recognition: the real rules of the choice, a recognizer and a download that are played
+    assistant.speech_recognizer = FakeRecognizer()
+    assistant.downloads = FakeDownloads(make_archive(folder / "model.tar.bz2", "base"))
+    assistant.stt = SttControl(assistant.speech_recognizer, SttSettings(folder / "stt.json"),
+                               WhisperLibrary(folder / "whisper", assistant.downloads))
     library = V.VoiceLibrary(root=str(folder / "voices"))
     assistant.tts = TTS(library=library, settings=V.TtsSettings(str(folder / "tts.json")),
                         system_engine_factory=SystemVoices, neural_engine=NoNeuralVoice())
@@ -531,6 +588,209 @@ class WindowTests(unittest.TestCase):
         page.show_tab("home")
         self.pump(150)
         self.assertIn("Живой текст речи", self.texts_in(page.groups["home"]))
+        self.app.show_page("home")
+
+
+    # ---------- The engine of the recognition ----------
+
+    def open_speech_tab(self):
+        self.app.show_page("settings")
+        self.app.pages["settings"].show_tab("speech")
+        self.pump(150)
+        return self.app.pages["settings"].speech
+
+    def reset_stt(self):
+        """Back to Vosk and no models, whatever the test before has done. A window that asks something would wait for
+        a person for ever, so the questions of the page are caught: self.dialogs tells what was asked."""
+        from unittest import mock
+        from src.interface import stt_section
+        self.dialogs = []
+        for name in ("showwarning", "askyesno"):
+            patcher = mock.patch.object(stt_section.messagebox, name, side_effect=(
+                lambda *args, _name=name, **kwargs: self.dialogs.append((_name, args)) or False))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        assistant = self.app.assistant
+        for model_id in assistant.stt.library.installed():
+            assistant.stt.library.remove(model_id)
+        assistant.stt.settings.update(engine="vosk", whisper_model="", language="ru")
+        assistant.speech_recognizer.use_engine("vosk")
+        assistant.speech_recognizer.calls.clear()
+        assistant.downloads.gate.set()
+        assistant.downloads.error = None
+        assistant.downloads.requested.clear()
+        self.app.stt_downloads.clear()
+
+    @staticmethod
+    def buttons_in(widget, text):
+        found = []
+        for child in tkinter.Misc.winfo_children(widget):
+            try:
+                if child.cget("text") == text and hasattr(child, "invoke"):
+                    found.append(child)
+            except Exception:
+                pass
+            found.extend(WindowTests.buttons_in(child, text))
+        return found
+
+    def test_23_the_speech_tab_shows_the_engine_and_the_models_to_download(self):
+        self.reset_stt()
+        section = self.open_speech_tab()
+        texts = self.texts_in(section)
+        self.assertIn("Распознавание команд", texts)
+        self.assertIn("Сейчас команды распознаёт Vosk.", texts)
+        for title in ("Tiny", "Base", "Small", "Turbo", "Large v3"):
+            self.assertIn(title, texts)
+        self.assertEqual(len(self.buttons_in(section, "Скачать")), 5)
+        self.assertEqual(section.engine_switch.value, "vosk")
+        self.assertIn("Распознавание", self.texts_in(self.app.pages["settings"].tabs))
+
+    def test_24_whisper_without_a_model_waits_for_one_and_vosk_keeps_working(self):
+        self.reset_stt()
+        section = self.open_speech_tab()
+        section.choose_engine("whisper")
+        self.pump(100)
+        self.assertIn("Whisper ждёт модель.", self.texts_in(section))
+        self.assertEqual(self.app.assistant.stt.settings.engine, "whisper")
+        self.assertEqual(self.app.assistant.speech_recognizer.engine, "vosk")
+        section.choose_engine("vosk")
+        self.pump(100)
+        self.assertIn("Сейчас команды распознаёт Vosk.", self.texts_in(section))
+
+    def test_25_a_model_is_downloaded_with_a_progress_and_put_to_work_by_the_button(self):
+        self.reset_stt()
+        assistant = self.app.assistant
+        assistant.downloads.gate.clear()
+        section = self.open_speech_tab()
+        self.buttons_in(section, "Скачать")[1].invoke()          # the second row: Base
+        self.pump(150)
+        self.assertEqual(list(self.app.stt_downloads), ["base"])
+        self.assertEqual(len(self.buttons_in(section, "Отмена")), 1)
+        self.assertEqual(len(self.buttons_in(section, "Скачать")), 4)
+        self.pump_until(lambda: section.busy["base"].get() > 0.1, "the progress bar did not move")
+        assistant.downloads.gate.set()
+        self.pump_until(lambda: assistant.stt.library.is_installed("base"), "the model was not installed")
+        self.pump(250)
+        self.assertEqual(self.app.stt_downloads, {})
+        self.assertEqual(len(self.buttons_in(section, "Использовать")), 1)
+        self.buttons_in(section, "Использовать")[0].invoke()
+        self.pump(150)
+        settings = assistant.stt.settings
+        self.assertEqual((settings.engine, settings.whisper_model), ("whisper", "base"))
+        self.assertEqual(assistant.speech_recognizer.calls[-1], ("whisper", "base", "ru"))
+        self.assertIn("Whisper Base загружается…", self.texts_in(section))
+        assistant.speech_recognizer.finish_loading("base")
+        section.refresh()
+        self.assertIn("Сейчас команды распознаёт Whisper Base.", self.texts_in(section))
+        self.assertIn("Используется", self.texts_in(section))
+        self.assertEqual(self.dialogs, [])
+
+    def test_26_a_model_that_arrives_while_whisper_waits_is_taken_at_once(self):
+        self.reset_stt()
+        assistant = self.app.assistant
+        section = self.open_speech_tab()
+        section.choose_engine("whisper")
+        section.download("tiny")
+        self.pump_until(lambda: assistant.stt.library.is_installed("tiny"), "the model was not installed")
+        self.pump(300)
+        self.assertEqual(assistant.stt.settings.whisper_model, "tiny")
+        self.assertEqual(assistant.speech_recognizer.calls[-1], ("whisper", "tiny", "ru"))
+
+    def test_27_a_download_can_be_cancelled_and_leaves_nothing(self):
+        self.reset_stt()
+        assistant = self.app.assistant
+        assistant.downloads.gate.clear()
+        section = self.open_speech_tab()
+        section.download("small")
+        self.pump(150)
+        self.buttons_in(section, "Отмена")[0].invoke()
+        self.pump_until(lambda: not self.app.stt_downloads, "the download did not stop")
+        self.pump(250)
+        self.assertEqual(assistant.stt.library.installed(), [])
+        self.assertEqual(len(self.buttons_in(section, "Скачать")), 5)
+        self.assertEqual(self.buttons_in(section, "Отмена"), [])
+        self.assertEqual(self.dialogs, [], "a download that the person cancelled is not an error to tell about")
+
+    def test_28_a_download_that_fails_tells_why(self):
+        from unittest import mock
+        self.reset_stt()
+        assistant = self.app.assistant
+        assistant.downloads.error = "Не удалось скачать модель. Проверьте интернет."
+        section = self.open_speech_tab()
+        with mock.patch("src.interface.stt_section.messagebox.showwarning") as warning:
+            section.download("base")
+            self.pump_until(lambda: warning.called, "the person was not told")
+        self.assertIn("Проверьте интернет", warning.call_args[0][1])
+        self.assertEqual(assistant.stt.library.installed(), [])
+        self.assertEqual(len(self.buttons_in(section, "Скачать")), 5)
+
+    def test_29_a_download_goes_on_when_the_window_is_built_again(self):
+        self.reset_stt()
+        assistant = self.app.assistant
+        assistant.downloads.gate.clear()
+        section = self.open_speech_tab()
+        section.download("base")
+        self.pump(150)
+        self.change(accent="graphite")
+        section = self.open_speech_tab()
+        self.assertEqual(len(self.buttons_in(section, "Отмена")), 1, "the new page shows the download that goes on")
+        assistant.downloads.gate.set()
+        self.pump_until(lambda: assistant.stt.library.is_installed("base"), "the model was not installed")
+        self.pump(250)
+        self.assertEqual(len(self.buttons_in(self.open_speech_tab(), "Использовать")), 1)
+        self.assertEqual(self.dialogs, [])
+        self.change(accent="violet")
+
+    def test_30_a_model_is_deleted_after_asking_and_vosk_takes_the_commands_back(self):
+        from unittest import mock
+        self.reset_stt()
+        assistant = self.app.assistant
+        assistant.stt.library.download("base")
+        section = self.open_speech_tab()
+        section.use("base")
+        self.assertEqual(assistant.stt.settings.engine, "whisper")
+        with mock.patch("src.interface.stt_section.messagebox.askyesno", return_value=False):
+            section.remove("base")
+        self.assertTrue(assistant.stt.library.is_installed("base"))
+        with mock.patch("src.interface.stt_section.messagebox.askyesno", return_value=True):
+            section.remove("base")
+        self.assertFalse(assistant.stt.library.is_installed("base"))
+        self.assertEqual((assistant.stt.settings.engine, assistant.speech_recognizer.engine), ("vosk", "vosk"))
+        self.pump(100)
+        self.assertIn("Сейчас команды распознаёт Vosk.", self.texts_in(section))
+
+    def test_31_the_language_is_chosen_and_a_model_that_was_put_in_by_hand_is_listed(self):
+        self.reset_stt()
+        assistant = self.app.assistant
+        mine = assistant.stt.library.folder("моя-модель")
+        mine.mkdir(parents=True)
+        for name in ("encoder.onnx", "decoder.onnx", "tokens.txt"):
+            (mine / name).write_bytes(b"x")
+        section = self.open_speech_tab()
+        self.assertIn("моя-модель", self.texts_in(section))
+        self.assertIn("Добавлена вручную", self.texts_in(section))
+        section.choose_language("English")
+        self.assertEqual(assistant.stt.settings.language, "en")
+        section.choose_language("Определять по речи")
+        self.assertEqual(assistant.stt.settings.language, "")
+
+    def test_32_the_quick_search_finds_the_engine_and_the_model_card_names_it(self):
+        self.reset_stt()
+        self.app.open_palette()
+        self.pump(100)
+        titles = [entry.title for entry in self.app.palette_entries()]
+        self.assertIn("Движок распознавания: Vosk или Whisper", titles)
+        self.app.close_palette()
+        entry = next(e for e in self.app.palette_entries() if e.title.startswith("Движок распознавания"))
+        entry.action()
+        self.pump(200)
+        self.assertEqual((self.app.current_page, self.app.settings_tab), ("settings", "speech"))
+        self.app.assistant.speech_recognizer.finish_loading("small")
+        self.app.pages["settings"].show_tab("models")
+        self.app.pages["settings"].models.refresh()
+        self.assertTrue(any("Whisper small" in text for text in self.texts_in(self.app.pages["settings"].models)))
+        self.reset_stt()
+        self.app.pages["settings"].models.refresh()
         self.app.show_page("home")
 
 

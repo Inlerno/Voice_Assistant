@@ -52,11 +52,16 @@ WEEKDAYS = {
 }
 WEEKDAY_NAMES = ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"]
 
-_TOKEN = re.compile(r"\d+(?::\d{2})?|[а-яa-z]+")
+# A number with a decimal point ("1.5 часа") is one token only before a unit of time; elsewhere "7.30" is the hour and
+# the minutes, two numbers
+_UNIT_AHEAD = "|".join(sorted(UNIT_SECONDS, key=len, reverse=True))
+_TOKEN = re.compile(rf"\d+\.\d+(?=\s+(?:{_UNIT_AHEAD})(?![а-яa-z]))|\d+(?::\d{{2}})?|[а-яa-z]+")
+_DECIMAL = re.compile(r"\d+\.\d+")
 
 
 def tokenize(text):
-    """Lower case words and numbers; ё is written as е, punctuation is dropped, 7:30 stays one token."""
+    """Lower case words and numbers; ё is written as е, punctuation is dropped, 7:30 stays one token (so does 1.5
+    before a unit of time)."""
     return _TOKEN.findall((text or "").lower().replace("ё", "е"))
 
 
@@ -64,15 +69,18 @@ def _digits(token):
     return token.isdigit()
 
 
-def read_number(tokens, i):
+def read_number(tokens, i, decimals=False):
     """A number written in words or digits that starts at tokens[i]: returns (value, next index) or None.
 
     "двадцать пять" is one number, "семь тридцать" are two: a word may continue the number only if it is
-    smaller in rank than the previous one (hundreds > tens > units)."""
+    smaller in rank than the previous one (hundreds > tens > units). A number with a decimal point ("1.5") is read
+    only when decimals is true (a length of time may be one, a count or a clock may not)."""
     if i >= len(tokens):
         return None
     if _digits(tokens[i]):
         return int(tokens[i]), i + 1
+    if decimals and _DECIMAL.fullmatch(tokens[i]):
+        return float(tokens[i]), i + 1
     total, current, last_rank, j, started = 0, 0, 4, i, False
     while j < len(tokens):
         word = tokens[j]
@@ -129,7 +137,7 @@ def find_duration(tokens):
                 seconds += 900
                 j, found = j + 2, True
                 continue
-            number = read_number(tokens, j)
+            number = read_number(tokens, j, decimals=True)
             if number is not None:
                 value, after = number
                 half = tokens[after:after + 2] == ["с", "половиной"]
@@ -137,7 +145,7 @@ def find_duration(tokens):
                     after += 2
                 if _after_number(tokens, after, UNIT_SECONDS):
                     unit = UNIT_SECONDS[tokens[after]]
-                    seconds += value * unit + (unit // 2 if half else 0)
+                    seconds += int(round(value * unit)) + (unit // 2 if half else 0)
                     j, found = after + 1, True
                     continue
                 break
